@@ -201,15 +201,40 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
         margin: 12px 0;
       }
       .field label { color: var(--muted); font-size: 12px; }
-      .field input, .field select {
+      .field input, .field select, .field textarea {
         padding: 10px 12px;
         border-radius: 12px;
         border: 1px solid var(--border);
         background: rgba(0,0,0,0.18);
         color: var(--text);
         outline: none;
+        font-family: inherit;
       }
-      .field input:focus, .field select:focus { border-color: rgba(122,162,255,0.65); }
+      .field textarea { min-height: 92px; resize: vertical; font-family: var(--mono); font-size: 12px; line-height: 1.4; }
+      .field input:focus, .field select:focus, .field textarea:focus { border-color: rgba(122,162,255,0.65); }
+
+      .story {
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 12px;
+        background: rgba(0,0,0,0.10);
+        margin-top: 12px;
+      }
+      .story .row {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        align-items: center;
+        gap: 10px;
+      }
+      .story .id {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .btn.danger {
+        border-color: rgba(251,113,133,0.55);
+        background: rgba(251,113,133,0.12);
+      }
 
       pre {
         margin: 0;
@@ -330,10 +355,82 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
 
           <section class="panel" data-panel="prd" style="display:none">
             <h2>PRD</h2>
-            <p>Preview whitelisted files through the safe filesystem reader.</p>
+            <p>Generate a Convert-compatible PRD markdown file (questionnaire mode), with live preview and safe saving under <span class="muted">tasks/</span>.</p>
             <div class="grid2">
               <div class="panel">
+                <h2>Questionnaire</h2>
+                <p class="muted">All fields are validated and the output follows <span class="muted">ohmyagentflow/prd@1</span>.</p>
+                <div class="field">
+                  <label for="prd-gen-project">Project (optional)</label>
+                  <input id="prd-gen-project" placeholder="TaskApp" autocomplete="off" />
+                </div>
+                <div class="field">
+                  <label for="prd-gen-slug">Feature slug (kebab-case)</label>
+                  <input id="prd-gen-slug" placeholder="task-status" autocomplete="off" />
+                </div>
+                <div class="field">
+                  <label for="prd-gen-title">Title</label>
+                  <input id="prd-gen-title" placeholder="Task Status Feature" autocomplete="off" />
+                </div>
+                <div class="field">
+                  <label for="prd-gen-desc">Description (1 line)</label>
+                  <input id="prd-gen-desc" placeholder="Add ability to mark tasks with different statuses." autocomplete="off" />
+                </div>
+                <div class="field">
+                  <label for="prd-gen-goals">Goals (one per line)</label>
+                  <textarea id="prd-gen-goals" placeholder="Track task progress\nImprove visibility"></textarea>
+                </div>
+                <div class="field">
+                  <label for="prd-gen-fr">Functional Requirements (one per line)</label>
+                  <textarea id="prd-gen-fr" placeholder="FR-1: ...\nFR-2: ..."></textarea>
+                </div>
+                <div class="field">
+                  <label for="prd-gen-nongoals">Non-Goals (one per line)</label>
+                  <textarea id="prd-gen-nongoals" placeholder="Mobile app support"></textarea>
+                </div>
+                <div class="field">
+                  <label for="prd-gen-metrics">Success Metrics (one per line)</label>
+                  <textarea id="prd-gen-metrics" placeholder="Reduced support tickets"></textarea>
+                </div>
+                <div class="field">
+                  <label for="prd-gen-questions">Open Questions (one per line)</label>
+                  <textarea id="prd-gen-questions" placeholder="Do we need audit logs?"></textarea>
+                </div>
+                <div class="kv">
+                  <div class="k">Endpoint</div>
+                  <div class="v">POST /api/prd/generate</div>
+                </div>
+                <div class="story">
+                  <div class="row">
+                    <div>
+                      <div style="font-weight:650">User Stories</div>
+                      <div class="id" id="prd-story-count">1 story</div>
+                    </div>
+                    <button class="btn" id="prd-gen-add-story" type="button">Add story</button>
+                  </div>
+                  <div id="prd-stories"></div>
+                </div>
+                <div style="height: 12px"></div>
+                <div style="display:flex; gap: 10px; flex-wrap: wrap;">
+                  <button class="btn" id="prd-gen-preview" type="button">Preview</button>
+                  <button class="btn primary" id="prd-gen-save" type="button">Save to tasks/</button>
+                </div>
+                <div class="kv">
+                  <div class="k">Saved path</div>
+                  <div class="v" id="prd-gen-saved">(not saved)</div>
+                </div>
+              </div>
+              <div class="panel">
                 <h2>Preview</h2>
+                <pre id="prd-gen-result">Fill the form to see a live preview…</pre>
+              </div>
+            </div>
+
+            <div style="height: 14px"></div>
+
+            <div class="grid2">
+              <div class="panel">
+                <h2>Load existing file</h2>
                 <div class="field">
                   <label for="prd-path">Path (project-relative)</label>
                   <input id="prd-path" list="prd-suggestions" placeholder="tasks/prd-your-feature.md" autocomplete="off" />
@@ -350,7 +447,7 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
                 </div>
               </div>
               <div class="panel">
-                <h2>Result</h2>
+                <h2>File content</h2>
                 <pre id="prd-result">No file loaded.</pre>
               </div>
             </div>
@@ -493,6 +590,182 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
             out.textContent = String(e && e.message ? e.message : e);
           }
         });
+
+        function splitLines(text) {
+          return String(text || '')
+            .split(/\\r?\\n/)
+            .map(s => s.trim())
+            .filter(Boolean);
+        }
+
+        function storyId(i) {
+          const n = i + 1;
+          return 'US-' + String(n).padStart(3, '0');
+        }
+
+        function updateStoryCount() {
+          const stories = document.querySelectorAll('[data-story]');
+          const label = document.getElementById('prd-story-count');
+          const n = stories.length;
+          label.textContent = n + (n === 1 ? ' story' : ' stories');
+          stories.forEach((el, idx) => {
+            const idEl = el.querySelector('[data-story-id]');
+            if (idEl) idEl.textContent = storyId(idx);
+          });
+        }
+
+        function createStoryCard() {
+          const wrap = document.createElement('div');
+          wrap.className = 'story';
+          wrap.setAttribute('data-story', '1');
+
+          const header = document.createElement('div');
+          header.className = 'row';
+
+          const left = document.createElement('div');
+          left.innerHTML = '<div style="font-weight:650">Story <span data-story-id></span></div><div class="id">IDs are auto-generated and must be sequential.</div>';
+
+          const remove = document.createElement('button');
+          remove.type = 'button';
+          remove.className = 'btn danger';
+          remove.textContent = 'Remove';
+          remove.addEventListener('click', () => {
+            wrap.remove();
+            updateStoryCount();
+            schedulePreview();
+          });
+
+          header.appendChild(left);
+          header.appendChild(remove);
+
+          const titleField = document.createElement('div');
+          titleField.className = 'field';
+          titleField.innerHTML = '<label>Title</label><input data-story-title placeholder="Add status field to tasks table" autocomplete="off" />';
+
+          const descField = document.createElement('div');
+          descField.className = 'field';
+          descField.innerHTML = '<label>Description (single line)</label><input data-story-desc placeholder="As a user, I want ... so that ..." autocomplete="off" />';
+
+          const acField = document.createElement('div');
+          acField.className = 'field';
+          acField.innerHTML = '<label>Acceptance Criteria (one per line)</label><textarea data-story-ac placeholder="...\\nTypecheck passes"></textarea>';
+
+          [titleField, descField, acField].forEach(el => {
+            el.addEventListener('input', schedulePreview);
+            el.addEventListener('change', schedulePreview);
+          });
+
+          wrap.appendChild(header);
+          wrap.appendChild(titleField);
+          wrap.appendChild(descField);
+          wrap.appendChild(acField);
+          return wrap;
+        }
+
+        const storiesRoot = document.getElementById('prd-stories');
+        if (storiesRoot && storiesRoot.children.length === 0) {
+          storiesRoot.appendChild(createStoryCard());
+          updateStoryCount();
+        }
+
+        document.getElementById('prd-gen-add-story').addEventListener('click', () => {
+          storiesRoot.appendChild(createStoryCard());
+          updateStoryCount();
+          schedulePreview();
+        });
+
+        function buildPRDPayload() {
+          const project = (document.getElementById('prd-gen-project').value || '').trim();
+          const featureSlug = (document.getElementById('prd-gen-slug').value || '').trim();
+          const title = (document.getElementById('prd-gen-title').value || '').trim();
+          const description = (document.getElementById('prd-gen-desc').value || '').trim();
+
+          const goals = splitLines(document.getElementById('prd-gen-goals').value);
+          const functionalRequirements = splitLines(document.getElementById('prd-gen-fr').value);
+          const nonGoals = splitLines(document.getElementById('prd-gen-nongoals').value);
+          const successMetrics = splitLines(document.getElementById('prd-gen-metrics').value);
+          const openQuestions = splitLines(document.getElementById('prd-gen-questions').value);
+
+          const storyEls = Array.from(document.querySelectorAll('[data-story]'));
+          const userStories = storyEls.map((el, idx) => {
+            const stTitle = (el.querySelector('[data-story-title]').value || '').trim();
+            const stDesc = (el.querySelector('[data-story-desc]').value || '').trim();
+            const ac = splitLines(el.querySelector('[data-story-ac]').value);
+            return { id: storyId(idx), title: stTitle, description: stDesc, acceptanceCriteria: ac };
+          });
+
+          return {
+            mode: 'questionnaire',
+            frontMatter: { project, featureSlug, title, description },
+            goals,
+            userStories,
+            functionalRequirements,
+            nonGoals,
+            successMetrics,
+            openQuestions
+          };
+        }
+
+        let previewTimer = null;
+        async function runPreview() {
+          const out = document.getElementById('prd-gen-result');
+          const payload = buildPRDPayload();
+          if (!payload.frontMatter.featureSlug || !payload.frontMatter.title || !payload.frontMatter.description) {
+            out.textContent = 'Fill feature slug, title, and description to preview…';
+            return;
+          }
+          try {
+            const data = await fetchJSON('/api/prd/generate?preview=1', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+            out.textContent = data && typeof data.content === 'string' ? data.content : '(no content)';
+          } catch (e) {
+            out.textContent = String(e && e.message ? e.message : e);
+          }
+        }
+
+        function schedulePreview() {
+          if (previewTimer) window.clearTimeout(previewTimer);
+          previewTimer = window.setTimeout(runPreview, 350);
+        }
+
+        ['prd-gen-project','prd-gen-slug','prd-gen-title','prd-gen-desc','prd-gen-goals','prd-gen-fr','prd-gen-nongoals','prd-gen-metrics','prd-gen-questions'].forEach(id => {
+          const el = document.getElementById(id);
+          if (!el) return;
+          el.addEventListener('input', schedulePreview);
+          el.addEventListener('change', schedulePreview);
+        });
+
+        document.getElementById('prd-gen-preview').addEventListener('click', async () => {
+          const out = document.getElementById('prd-gen-result');
+          out.textContent = 'Previewing…';
+          await runPreview();
+        });
+
+        document.getElementById('prd-gen-save').addEventListener('click', async () => {
+          const out = document.getElementById('prd-gen-result');
+          out.textContent = 'Saving…';
+          const payload = buildPRDPayload();
+          try {
+            const data = await fetchJSON('/api/prd/generate', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+            out.textContent = data && typeof data.content === 'string' ? data.content : '(no content)';
+            const saved = document.getElementById('prd-gen-saved');
+            if (saved) saved.textContent = (data && data.path) ? data.path : '(unknown)';
+            const pathInput = document.getElementById('prd-path');
+            if (pathInput && data && data.path) pathInput.value = data.path;
+          } catch (e) {
+            out.textContent = String(e && e.message ? e.message : e);
+          }
+        });
+
+        // Kick off an initial best-effort preview to populate placeholders.
+        schedulePreview();
 
         // Best-effort SSE connection for live status. Runs without requiring a runId.
         try {

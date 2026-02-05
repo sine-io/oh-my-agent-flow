@@ -82,6 +82,7 @@ func main() {
 	mux.HandleFunc("GET /api/stream", console.StreamHandler(streamHub))
 
 	mux.HandleFunc("POST /api/init", console.InitHandler(console.InitConfig{ProjectRoot: projectRoot}))
+	mux.HandleFunc("POST /api/prd/generate", console.PRDGenerateHandler(console.PRDGenerateConfig{ProjectRoot: projectRoot}))
 
 	mux.HandleFunc("POST /api/ping", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")

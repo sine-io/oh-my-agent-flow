@@ -145,29 +145,5 @@ func InitHandler(cfg InitConfig) http.HandlerFunc {
 }
 
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
-	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, ".init-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := f.Name()
-	defer func() {
-		_ = os.Remove(tmpPath)
-	}()
-
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Chmod(perm); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-
-	// Ensure rename works even if the destination already exists.
-	_ = os.Remove(path)
-	return os.Rename(tmpPath, path)
+	return writeFileAtomicWithPrefix(path, data, perm, ".init-*")
 }

@@ -7,6 +7,7 @@
 - Protect all `POST /api/*` routes using `console.RequireWriteAuth(...)` (Origin allowlist + `X-Session-Token`), and inject the token into the UI via `<meta name="ohmyagentflow-session-token" ...>`.
 - Keep the UI HTML in `internal/console` via `console.RenderIndexHTML(...)` (uses `html/template`) so `cmd/ohmyagentflow/main.go` stays focused on wiring.
 - For filesystem reads, use `console.NewFSReader(...)` + `FSReadHandler(...)` so paths are forced under project root, symlink escapes are blocked, reads are whitelisted, and file size is capped.
+- For questionnaire PRD generation, use `POST /api/prd/generate?preview=1` for live previews (no write) and `POST /api/prd/generate` to atomically write `tasks/prd-<feature_slug>.md`.
 - For SSE logs, use `console.NewStreamHub(...)` + `console.StreamHandler(...)`; publish events via `hub.Publish(StreamEvent{...})` and clients can reconnect with `sinceSeq` for replay.
 - `StreamHub` can archive run events to disk as JSONL (`.ohmyagentflow/runs/<runId>.jsonl`) with `.tmp` + atomic rename on `run_finished` (config via `StreamHubConfig.ArchiveDir` / `MaxArchiveBytes`).
 - Before starting a new run archive, `StreamHub` performs a best-effort cleanup in `.ohmyagentflow/runs/` to cap total archives by count and total directory size (deletes oldest-by-mtime first; failures are non-blocking and emitted as an `error` event).
@@ -110,4 +111,14 @@ Started: Thu Feb  5 19:53:13 CST 2026
 - **Learnings for future iterations:**
   - Treat init as a pure filesystem operation: copy from `skills/<skill>/SKILL-codex.md` to `.codex/skills/<skill>/SKILL.md` via an atomic write+rename to avoid partial installs.
   - Return a structured JSON summary (`created`, `overwritten`, `warnings`) so the UI can stay simple and idempotent runs can be user-friendly.
+---
+
+## 2026-02-05 23:17:49 CST - US-011
+- Implemented `POST /api/prd/generate` (questionnaire mode) to validate a structured JSON payload and write a Convert-compatible PRD markdown file to `tasks/prd-<feature_slug>.md`.
+- Added a `preview=1` mode so the UI can render a live PRD preview without writing to disk, then save atomically on demand.
+- Updated the PRD step UI to a questionnaire form with dynamic user stories, live preview, and a “Save to tasks/” action.
+- Files changed: `cmd/ohmyagentflow/main.go`, `internal/console/prd_generate.go`, `internal/console/prd_generate_test.go`, `internal/console/index_page.go`, `internal/console/file_atomic.go`, `internal/console/init.go`, `AGENTS.md`, `prd.json`, `progress.txt`
+- **Learnings for future iterations:**
+  - Enforce the PRD template limits early (slug regex/lengths, single-line descriptions, item counts) so Convert can stay deterministic.
+  - Live previews work well by reusing the same generator endpoint with `?preview=1` and keeping writes atomic for the “Save” path.
 ---
