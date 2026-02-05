@@ -1,12 +1,70 @@
 #!/bin/bash
 # Ralph Wiggum - Long-running AI agent loop
-# Usage: ./ralph.sh [--tool claude|codex] [max_iterations]
+# Usage:
+#   ./ralph-codex.sh init [--tool codex]
+#   ./ralph-codex.sh [--tool claude|codex] [max_iterations]
 
 set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+usage() {
+  cat <<EOF
+Usage:
+  $(basename "$0") init [--tool codex]
+  $(basename "$0") [--tool claude|codex] [max_iterations]
+
+Commands:
+  init   Create local Codex skills folder and install Ralph skills (Codex only)
+EOF
+}
+
+cmd_init() {
+  if [[ "$TOOL" != "codex" ]]; then
+    echo "Error: init currently supports only '--tool codex'."
+    exit 1
+  fi
+
+  mkdir -p "$SCRIPT_DIR/.codex/skills"
+  mkdir -p "$SCRIPT_DIR/oh-my-agent-flow"
+
+  local src_generator="$SCRIPT_DIR/skills/ralph-prd-generator/SKILL-codex.md"
+  local src_converter="$SCRIPT_DIR/skills/ralph-prd-converter/SKILL-codex.md"
+
+  if [[ ! -f "$src_generator" ]]; then
+    echo "Error: Missing file: $src_generator"
+    exit 1
+  fi
+  if [[ ! -f "$src_converter" ]]; then
+    echo "Error: Missing file: $src_converter"
+    exit 1
+  fi
+
+  mkdir -p "$SCRIPT_DIR/.codex/skills/ralph-prd-generator"
+  mkdir -p "$SCRIPT_DIR/.codex/skills/ralph-prd-converter"
+
+  cp "$src_generator" "$SCRIPT_DIR/.codex/skills/ralph-prd-generator/SKILL.md"
+  cp "$src_converter" "$SCRIPT_DIR/.codex/skills/ralph-prd-converter/SKILL.md"
+
+  echo "Init complete:"
+  echo "  - Created: $SCRIPT_DIR/.codex/skills"
+  echo "  - Created: $SCRIPT_DIR/oh-my-agent-flow"
+  echo "  - Installed: .codex/skills/ralph-prd-generator/SKILL.md"
+  echo "  - Installed: .codex/skills/ralph-prd-converter/SKILL.md"
+}
 
 # Parse arguments
 TOOL="codex"  # Default to codex for backwards compatibility
 MAX_ITERATIONS=10
+
+SUBCOMMAND=""
+if [[ "${1:-}" == "init" ]]; then
+  SUBCOMMAND="init"
+  shift
+elif [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -18,10 +76,19 @@ while [[ $# -gt 0 ]]; do
       TOOL="${1#*=}"
       shift
       ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
     *)
       # Assume it's max_iterations if it's a number
       if [[ "$1" =~ ^[0-9]+$ ]]; then
         MAX_ITERATIONS="$1"
+      else
+        echo "Error: Unknown argument: $1"
+        echo ""
+        usage
+        exit 1
       fi
       shift
       ;;
@@ -34,11 +101,15 @@ if [[ "$TOOL" != "codex" && "$TOOL" != "claude" ]]; then
   exit 1
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PRD_FILE="$SCRIPT_DIR/prd.json"
 PROGRESS_FILE="$SCRIPT_DIR/progress.txt"
 ARCHIVE_DIR="$SCRIPT_DIR/archive"
 LAST_BRANCH_FILE="$SCRIPT_DIR/.last-branch"
+
+if [[ "$SUBCOMMAND" == "init" ]]; then
+  cmd_init
+  exit 0
+fi
 
 # Archive previous run if branch changed
 if [ -f "$PRD_FILE" ] && [ -f "$LAST_BRANCH_FILE" ]; then

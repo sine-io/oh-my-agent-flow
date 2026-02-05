@@ -11,3 +11,9 @@ progress.txt
 
 #Claude
 .claude/
+
+# Codex local skills
+.codex/
+
+# Local workspace folder created by init
+oh-my-agent-flow/

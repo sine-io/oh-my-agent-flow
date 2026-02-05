@@ -21,12 +21,15 @@ cd flowchart && npm run build
 
 # Run Ralph with Codex
 ./ralph-codex.sh [max_iterations]
+
+# Initialize Codex skills for this repo
+./ralph-codex.sh init --tool codex
 ```
 
 ## Key Files
 
 - `ralph.sh` - The bash loop that spawns fresh AI instances (supports `--tool amp` or `--tool claude`)
-- `ralph-codex.sh` - The bash loop that spawns fresh AI instances (supports `--tool codex` or `--tool claude`)
+- `ralph-codex.sh` - The bash loop that spawns fresh AI instances (supports `--tool codex` or `--tool claude`), and `init` to install local Codex skills
 - `prompt.md` - Instructions given to each AMP instance
 -  `CLAUDE.md` - Instructions given to each Claude Code instance
 -  `CODEX.md` - Instructions given to each Codex instance
@@ -49,4 +52,5 @@ npm run dev
 - Each iteration spawns a fresh AI instance (Amp or Claude Code) with clean context
 - Memory persists via git history, `progress.txt`, and `prd.json`
 - Stories should be small enough to complete in one context window
+- For Codex, run `./ralph-codex.sh init --tool codex` once to install repo-local skills into `.codex/skills`
 - Always update AGENTS.md with discovered patterns for future iterations
