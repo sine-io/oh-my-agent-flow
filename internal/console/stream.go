@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -13,6 +16,7 @@ import (
 
 const DefaultMaxEventsPerRun = 5000
 const DefaultMaxProcessTextBytes = 8 * 1024
+const DefaultMaxArchiveBytes = 50 * 1024 * 1024
 
 type StreamEvent struct {
 	TS    string `json:"ts"`
@@ -28,6 +32,8 @@ type StreamHubConfig struct {
 	MaxEventsPerRun     int
 	SubscriberBufSize   int
 	MaxProcessTextBytes int
+	ArchiveDir          string
+	MaxArchiveBytes     int64
 }
 
 type StreamHub struct {
@@ -42,6 +48,10 @@ type StreamHub struct {
 	emitReplayTruncate    bool
 	maxProcessTextBytes   int
 	emitGovernanceWarning bool
+
+	archiveDir      string
+	maxArchiveBytes int64
+	archives        map[string]*runArchiveState
 }
 
 type streamRunState struct {
@@ -50,6 +60,17 @@ type streamRunState struct {
 
 	replayTruncateEmitted    bool
 	governanceWarningEmitted bool
+}
+
+type runArchiveState struct {
+	tmpPath   string
+	finalPath string
+	f         *os.File
+
+	bytesWritten int64
+	stopped      bool
+	errorEmitted bool
+	finalized    bool
 }
 
 func NewStreamHub(cfg StreamHubConfig) *StreamHub {
@@ -65,6 +86,14 @@ func NewStreamHub(cfg StreamHubConfig) *StreamHub {
 	if maxTextBytes <= 0 {
 		maxTextBytes = DefaultMaxProcessTextBytes
 	}
+	archiveDir := cfg.ArchiveDir
+	maxArchiveBytes := cfg.MaxArchiveBytes
+	if archiveDir != "" && maxArchiveBytes <= 0 {
+		maxArchiveBytes = DefaultMaxArchiveBytes
+	}
+	if archiveDir == "" {
+		maxArchiveBytes = 0
+	}
 
 	return &StreamHub{
 		runs:                  make(map[string]*streamRunState),
@@ -75,6 +104,9 @@ func NewStreamHub(cfg StreamHubConfig) *StreamHub {
 		emitReplayTruncate:    true,
 		maxProcessTextBytes:   maxTextBytes,
 		emitGovernanceWarning: true,
+		archiveDir:            archiveDir,
+		maxArchiveBytes:       maxArchiveBytes,
+		archives:              make(map[string]*runArchiveState),
 	}
 }
 
@@ -122,10 +154,15 @@ func (h *StreamHub) Publish(event StreamEvent) StreamEvent {
 
 func (h *StreamHub) governAndPublishLocked(event StreamEvent) (published StreamEvent, extra []StreamEvent) {
 	event, didTruncate := h.governProcessOutput(event)
-	published = h.publishLocked(event)
+	var archiveExtra *StreamEvent
+	published, archiveExtra = h.publishLocked(event)
+	if archiveExtra != nil {
+		ev, _ := h.publishLocked(*archiveExtra)
+		extra = append(extra, ev)
+	}
 
 	if !didTruncate || published.RunID == "" || !h.emitGovernanceWarning {
-		return published, nil
+		return published, extra
 	}
 
 	state := h.runs[published.RunID]
@@ -150,8 +187,14 @@ func (h *StreamHub) governAndPublishLocked(event StreamEvent) (published StreamE
 			"limitBytes":       h.maxProcessTextBytes,
 		},
 	}
-	warning = h.publishLocked(warning)
-	return published, []StreamEvent{warning}
+	var warningArchiveExtra *StreamEvent
+	warning, warningArchiveExtra = h.publishLocked(warning)
+	extra = append(extra, warning)
+	if warningArchiveExtra != nil {
+		ev, _ := h.publishLocked(*warningArchiveExtra)
+		extra = append(extra, ev)
+	}
+	return published, extra
 }
 
 func (h *StreamHub) governProcessOutput(event StreamEvent) (StreamEvent, bool) {
@@ -201,13 +244,13 @@ func truncateUTF8ToBytes(s string, maxBytes int) (string, bool) {
 	return string(cut), true
 }
 
-func (h *StreamHub) publishLocked(event StreamEvent) StreamEvent {
+func (h *StreamHub) publishLocked(event StreamEvent) (StreamEvent, *StreamEvent) {
 	if event.TS == "" {
 		event.TS = time.Now().UTC().Format(time.RFC3339Nano)
 	}
 
 	if event.RunID == "" {
-		return event
+		return event, nil
 	}
 
 	state, ok := h.runs[event.RunID]
@@ -223,7 +266,8 @@ func (h *StreamHub) publishLocked(event StreamEvent) StreamEvent {
 		state.events = state.events[len(state.events)-h.maxEventsPerRun:]
 	}
 
-	return event
+	archiveExtra := h.archiveEventLocked(event)
+	return event, archiveExtra
 }
 
 func (h *StreamHub) SubscribeAll() (<-chan StreamEvent, func()) {
@@ -238,6 +282,268 @@ func (h *StreamHub) SubscribeAll() (<-chan StreamEvent, func()) {
 		h.mu.Unlock()
 		close(ch)
 	}
+}
+
+func (h *StreamHub) archiveEventLocked(event StreamEvent) *StreamEvent {
+	if h.archiveDir == "" || h.maxArchiveBytes <= 0 {
+		return nil
+	}
+	if event.RunID == "" {
+		return nil
+	}
+
+	arch := h.archives[event.RunID]
+	if arch == nil {
+		safeName := sanitizeRunIDForFilename(event.RunID)
+		if safeName == "" {
+			safeName = "run"
+		}
+		finalPath := filepath.Join(h.archiveDir, safeName+".jsonl")
+		tmpPath := finalPath + ".tmp"
+		arch = &runArchiveState{tmpPath: tmpPath, finalPath: finalPath}
+		h.archives[event.RunID] = arch
+	}
+
+	if arch.finalized {
+		return nil
+	}
+
+	if arch.f == nil && !arch.stopped {
+		if err := os.MkdirAll(h.archiveDir, 0o755); err != nil {
+			arch.stopped = true
+			if !arch.errorEmitted {
+				arch.errorEmitted = true
+				return &StreamEvent{
+					RunID: event.RunID,
+					Type:  "error",
+					Step:  "archive",
+					Level: "error",
+					Data: map[string]any{
+						"code":    "ARCHIVE_CREATE_FAILED",
+						"message": "Failed to create archive directory; run logs will not be written to disk.",
+						"dir":     h.archiveDir,
+					},
+				}
+			}
+			return nil
+		}
+
+		f, err := os.OpenFile(arch.tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+		if err != nil {
+			arch.stopped = true
+			if !arch.errorEmitted {
+				arch.errorEmitted = true
+				return &StreamEvent{
+					RunID: event.RunID,
+					Type:  "error",
+					Step:  "archive",
+					Level: "error",
+					Data: map[string]any{
+						"code":    "ARCHIVE_OPEN_FAILED",
+						"message": "Failed to open run archive; run logs will not be written to disk.",
+						"path":    arch.tmpPath,
+					},
+				}
+			}
+			return nil
+		}
+		arch.f = f
+	}
+
+	if arch.stopped || arch.f == nil {
+		if event.Type != "run_finished" {
+			return nil
+		}
+
+		if arch.f != nil {
+			if err := arch.f.Close(); err != nil && !arch.errorEmitted {
+				arch.errorEmitted = true
+				arch.finalized = true
+				arch.f = nil
+				return &StreamEvent{
+					RunID: event.RunID,
+					Type:  "error",
+					Step:  "archive",
+					Level: "error",
+					Data: map[string]any{
+						"code":    "ARCHIVE_CLOSE_FAILED",
+						"message": "Failed to close run archive; archive may be incomplete.",
+						"path":    arch.tmpPath,
+					},
+				}
+			}
+			arch.f = nil
+			if err := os.Rename(arch.tmpPath, arch.finalPath); err != nil && !arch.errorEmitted {
+				arch.errorEmitted = true
+				arch.finalized = true
+				return &StreamEvent{
+					RunID: event.RunID,
+					Type:  "error",
+					Step:  "archive",
+					Level: "error",
+					Data: map[string]any{
+						"code":    "ARCHIVE_RENAME_FAILED",
+						"message": "Failed to finalize run archive; archive may be left as a .tmp file.",
+						"tmpPath": arch.tmpPath,
+						"path":    arch.finalPath,
+					},
+				}
+			}
+		}
+
+		arch.finalized = true
+		return nil
+	}
+
+	line, err := encodeJSONLLine(event)
+	if err != nil {
+		arch.stopped = true
+		if !arch.errorEmitted {
+			arch.errorEmitted = true
+			return &StreamEvent{
+				RunID: event.RunID,
+				Type:  "error",
+				Step:  "archive",
+				Level: "error",
+				Data: map[string]any{
+					"code":    "ARCHIVE_ENCODE_FAILED",
+					"message": "Failed to encode an event for archiving; further events will not be written to disk.",
+				},
+			}
+		}
+		return nil
+	}
+
+	if arch.bytesWritten+int64(len(line)) > h.maxArchiveBytes {
+		arch.stopped = true
+		if !arch.errorEmitted {
+			arch.errorEmitted = true
+			return &StreamEvent{
+				RunID: event.RunID,
+				Type:  "error",
+				Step:  "archive",
+				Level: "error",
+				Data: map[string]any{
+					"code":     "ARCHIVE_TOO_LARGE",
+					"message":  "Run archive exceeded the configured max size; further events will not be written to disk.",
+					"maxBytes": h.maxArchiveBytes,
+					"path":     arch.finalPath,
+				},
+			}
+		}
+		return nil
+	}
+
+	if _, err := arch.f.Write(line); err != nil {
+		arch.stopped = true
+		if !arch.errorEmitted {
+			arch.errorEmitted = true
+			return &StreamEvent{
+				RunID: event.RunID,
+				Type:  "error",
+				Step:  "archive",
+				Level: "error",
+				Data: map[string]any{
+					"code":    "ARCHIVE_WRITE_FAILED",
+					"message": "Failed to write run archive; further events will not be written to disk.",
+					"path":    arch.tmpPath,
+				},
+			}
+		}
+		return nil
+	}
+	arch.bytesWritten += int64(len(line))
+
+	if event.Type == "run_finished" {
+		if err := arch.f.Close(); err != nil && !arch.errorEmitted {
+			arch.errorEmitted = true
+			arch.finalized = true
+			arch.f = nil
+			return &StreamEvent{
+				RunID: event.RunID,
+				Type:  "error",
+				Step:  "archive",
+				Level: "error",
+				Data: map[string]any{
+					"code":    "ARCHIVE_CLOSE_FAILED",
+					"message": "Failed to close run archive; archive may be incomplete.",
+					"path":    arch.tmpPath,
+				},
+			}
+		}
+		arch.f = nil
+		if err := os.Rename(arch.tmpPath, arch.finalPath); err != nil && !arch.errorEmitted {
+			arch.errorEmitted = true
+			arch.finalized = true
+			return &StreamEvent{
+				RunID: event.RunID,
+				Type:  "error",
+				Step:  "archive",
+				Level: "error",
+				Data: map[string]any{
+					"code":    "ARCHIVE_RENAME_FAILED",
+					"message": "Failed to finalize run archive; archive may be left as a .tmp file.",
+					"tmpPath": arch.tmpPath,
+					"path":    arch.finalPath,
+				},
+			}
+		}
+		arch.finalized = true
+	}
+
+	return nil
+}
+
+func sanitizeRunIDForFilename(runID string) string {
+	if runID == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(runID))
+	for _, r := range runID {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-' || r == '_' || r == '.':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	out := strings.Trim(outMaybeTrimDots(b.String()), " _")
+	out = strings.Trim(out, ".")
+	if out == "" {
+		return ""
+	}
+	if out == "." || out == ".." {
+		return ""
+	}
+	return out
+}
+
+func outMaybeTrimDots(s string) string {
+	for strings.Contains(s, "..") {
+		s = strings.ReplaceAll(s, "..", ".")
+	}
+	return s
+}
+
+func encodeJSONLLine(ev StreamEvent) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(ev); err != nil {
+		return nil, err
+	}
+	if buf.Len() == 0 {
+		return []byte("\n"), nil
+	}
+	// Encoder.Encode already appends a newline, which is exactly JSONL.
+	return buf.Bytes(), nil
 }
 
 func (h *StreamHub) ReplayAndSubscribe(runID string, sinceSeq uint64) (replay []StreamEvent, ch <-chan StreamEvent, unsubscribe func(), truncated bool) {

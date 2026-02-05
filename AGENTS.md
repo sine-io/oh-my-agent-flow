@@ -59,4 +59,5 @@ npm run dev
 - For local-console write endpoints, guard `POST /api/*` with strict Origin allowlisting plus a per-run `X-Session-Token` (see `internal/console/RequireWriteAuth` and the `<meta name="ohmyagentflow-session-token">` convention).
 - For local-console filesystem access, route all user-supplied paths through `internal/console/FSReader` to enforce project-root containment, symlink-escape prevention, whitelisting, and max read size.
 - For SSE logs, use `internal/console/StreamHub` + `StreamHandler` for run-scoped `seq` ordering, retention, and `sinceSeq` replay (and governance: truncate noisy `process_stdout/stderr` messages and emit a warning once per run).
+- `StreamHub` also archives run streams to `.ohmyagentflow/runs/<runId>.jsonl` (writes `.tmp` during the run, renames on `run_finished`, size cap via `StreamHubConfig.MaxArchiveBytes`).
 - Always update AGENTS.md with discovered patterns for future iterations

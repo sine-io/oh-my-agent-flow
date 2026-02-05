@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 
 	"github.com/snarktank/oh-my-agent-flow/internal/console"
@@ -49,7 +50,9 @@ func main() {
 		log.Fatalf("startup error: %v", err)
 	}
 
-	streamHub := console.NewStreamHub(console.StreamHubConfig{})
+	streamHub := console.NewStreamHub(console.StreamHubConfig{
+		ArchiveDir: filepath.Join(projectRoot, ".ohmyagentflow", "runs"),
+	})
 
 	fmt.Println(baseURL)
 

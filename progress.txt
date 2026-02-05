@@ -7,6 +7,7 @@
 - Protect all `POST /api/*` routes using `console.RequireWriteAuth(...)` (Origin allowlist + `X-Session-Token`), and inject the token into the UI via `<meta name="ohmyagentflow-session-token" ...>`.
 - For filesystem reads, use `console.NewFSReader(...)` + `FSReadHandler(...)` so paths are forced under project root, symlink escapes are blocked, reads are whitelisted, and file size is capped.
 - For SSE logs, use `console.NewStreamHub(...)` + `console.StreamHandler(...)`; publish events via `hub.Publish(StreamEvent{...})` and clients can reconnect with `sinceSeq` for replay.
+- `StreamHub` can archive run events to disk as JSONL (`.ohmyagentflow/runs/<runId>.jsonl`) with `.tmp` + atomic rename on `run_finished` (config via `StreamHubConfig.ArchiveDir` / `MaxArchiveBytes`).
 - `StreamHub` enforces governance for noisy process output: truncates `process_stdout/stderr` `data.text` (default 8KB) and emits a one-time `progress` warning per run (config via `StreamHubConfig.MaxProcessTextBytes`).
 
 Started: Thu Feb  5 19:53:13 CST 2026
@@ -66,4 +67,13 @@ Started: Thu Feb  5 19:53:13 CST 2026
 - **Learnings for future iterations:**
   - Configure process output truncation via `StreamHubConfig.MaxProcessTextBytes` to keep tests fast and behavior predictable.
   - `StreamHub.Publish(...)` may emit additional governance events; subscribers should rely on `runId` + `seq` for dedupe/ordering.
+---
+
+## 2026-02-05 22:06:23 CST - US-007
+- Added run archiving for `StreamHub`: writes `.ohmyagentflow/runs/<runId>.jsonl.tmp` during the run and atomically renames to `.jsonl` when a `run_finished` event is published.
+- Enforced a max archive size (default 50MB); once exceeded, the hub stops writing and emits a single `error` event (`step=archive`, `code=ARCHIVE_TOO_LARGE`).
+- Files changed: `internal/console/stream.go`, `internal/console/stream_test.go`, `cmd/ohmyagentflow/main.go`, `prd.json`, `progress.txt`
+- **Learnings for future iterations:**
+  - Always sanitize `runId` before using it as a filename to avoid path traversal or invalid paths.
+  - If an archive is stopped due to size limits, still finalize it on `run_finished` by closing and renaming the `.tmp` file.
 ---
