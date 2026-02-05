@@ -81,6 +81,8 @@ func main() {
 	mux.HandleFunc("GET /api/fs/read", console.FSReadHandler(fsReader))
 	mux.HandleFunc("GET /api/stream", console.StreamHandler(streamHub))
 
+	mux.HandleFunc("POST /api/init", console.InitHandler(console.InitConfig{ProjectRoot: projectRoot}))
+
 	mux.HandleFunc("POST /api/ping", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})

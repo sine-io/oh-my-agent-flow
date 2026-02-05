@@ -56,6 +56,7 @@ npm run dev
 - Memory persists via git history, `progress.txt`, and `prd.json`
 - Stories should be small enough to complete in one context window
 - For Codex, run `./ralph-codex.sh init --tool codex` once to install repo-local skills into `.codex/skills`
+- The console also supports `POST /api/init` to install repo-local Codex skills without shelling out (copies `skills/<skill>/SKILL-codex.md` to `.codex/skills/<skill>/SKILL.md`).
 - Keep `cmd/ohmyagentflow/main.go` minimal: render the console UI via `internal/console.RenderIndexHTML(...)` (uses `html/template`) and pass dynamic values via `IndexPageData`.
 - For local-console write endpoints, guard `POST /api/*` with strict Origin allowlisting plus a per-run `X-Session-Token` (see `internal/console/RequireWriteAuth` and the `<meta name="ohmyagentflow-session-token">` convention).
 - For local-console filesystem access, route all user-supplied paths through `internal/console/FSReader` to enforce project-root containment, symlink-escape prevention, whitelisting, and max read size.

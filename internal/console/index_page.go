@@ -318,8 +318,8 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
             <div class="grid2">
               <div class="panel">
                 <h2>Action</h2>
-                <p>This will be wired to <span class="muted">POST /api/init</span> in a later story.</p>
-                <button class="btn primary" type="button" disabled>Initialize skills (coming soon)</button>
+                <p>Runs <span class="muted">POST /api/init</span> to install repo-local Codex skills into <span class="muted">.codex/skills</span>.</p>
+                <button class="btn primary" id="init-run" type="button">Initialize skills</button>
               </div>
               <div class="panel">
                 <h2>Result</h2>
@@ -470,6 +470,17 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
           }
           return data;
         }
+
+        document.getElementById('init-run').addEventListener('click', async () => {
+          const out = document.getElementById('init-result');
+          out.textContent = 'Running…';
+          try {
+            const data = await fetchJSON('/api/init', { method: 'POST' });
+            out.textContent = JSON.stringify(data, null, 2);
+          } catch (e) {
+            out.textContent = String(e && e.message ? e.message : e);
+          }
+        });
 
         document.getElementById('prd-preview').addEventListener('click', async () => {
           const path = (document.getElementById('prd-path').value || '').trim();

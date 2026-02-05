@@ -11,6 +11,7 @@
 - `StreamHub` can archive run events to disk as JSONL (`.ohmyagentflow/runs/<runId>.jsonl`) with `.tmp` + atomic rename on `run_finished` (config via `StreamHubConfig.ArchiveDir` / `MaxArchiveBytes`).
 - Before starting a new run archive, `StreamHub` performs a best-effort cleanup in `.ohmyagentflow/runs/` to cap total archives by count and total directory size (deletes oldest-by-mtime first; failures are non-blocking and emitted as an `error` event).
 - `StreamHub` enforces governance for noisy process output: truncates `process_stdout/stderr` `data.text` (default 8KB) and emits a one-time `progress` warning per run (config via `StreamHubConfig.MaxProcessTextBytes`).
+- Use `POST /api/init` (Go filesystem ops, no shell) to install repo-local Codex skills by copying `skills/<skill>/SKILL-codex.md` into `.codex/skills/<skill>/SKILL.md`.
 
 Started: Thu Feb  5 19:53:13 CST 2026
 ---
@@ -99,4 +100,14 @@ Started: Thu Feb  5 19:53:13 CST 2026
   - Keep the console UI HTML in `internal/console` using `html/template` so `cmd/ohmyagentflow/main.go` stays focused on wiring.
   - Use the existing `FSReader` + `GET /api/fs/read` for safe previews (tasks/prd-*.md, `prd.json`, `progress.txt`) instead of reading files directly in the UI.
   - Manual browser verification is still recommended; this iteration validated the HTML payload via `curl` but did not run a real browser session.
+---
+
+## 2026-02-05 22:39:37 CST - US-010
+- Implemented `POST /api/init` to install repo-local Codex skills using Go filesystem operations (no shell), mirroring `./ralph-codex.sh init --tool codex`.
+- Wired the Init UI button to call `/api/init` and render the JSON result.
+- Added tests covering create, overwrite, and missing-source behaviors.
+- Files changed: `cmd/ohmyagentflow/main.go`, `internal/console/init.go`, `internal/console/init_test.go`, `internal/console/index_page.go`, `prd.json`, `progress.txt`, `AGENTS.md`
+- **Learnings for future iterations:**
+  - Treat init as a pure filesystem operation: copy from `skills/<skill>/SKILL-codex.md` to `.codex/skills/<skill>/SKILL.md` via an atomic write+rename to avoid partial installs.
+  - Return a structured JSON summary (`created`, `overwritten`, `warnings`) so the UI can stay simple and idempotent runs can be user-friendly.
 ---
