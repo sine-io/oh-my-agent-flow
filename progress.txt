@@ -5,6 +5,7 @@
 - Prefer Go stdlib (`net/http`, `flag`, `net.Listen`) for the console to avoid external module download flakiness during development/CI.
 - Canonicalize the UI origin early: use `console.RedirectLocalhostTo127(...)` so browser requests land on `127.0.0.1` (helps strict Origin checks later).
 - Protect all `POST /api/*` routes using `console.RequireWriteAuth(...)` (Origin allowlist + `X-Session-Token`), and inject the token into the UI via `<meta name="ohmyagentflow-session-token" ...>`.
+- Keep the UI HTML in `internal/console` via `console.RenderIndexHTML(...)` (uses `html/template`) so `cmd/ohmyagentflow/main.go` stays focused on wiring.
 - For filesystem reads, use `console.NewFSReader(...)` + `FSReadHandler(...)` so paths are forced under project root, symlink escapes are blocked, reads are whitelisted, and file size is capped.
 - For SSE logs, use `console.NewStreamHub(...)` + `console.StreamHandler(...)`; publish events via `hub.Publish(StreamEvent{...})` and clients can reconnect with `sinceSeq` for replay.
 - `StreamHub` can archive run events to disk as JSONL (`.ohmyagentflow/runs/<runId>.jsonl`) with `.tmp` + atomic rename on `run_finished` (config via `StreamHubConfig.ArchiveDir` / `MaxArchiveBytes`).
@@ -87,4 +88,15 @@ Started: Thu Feb  5 19:53:13 CST 2026
 - **Learnings for future iterations:**
   - To keep retention limits true even while a new run is starting, cleanup reserves one “slot” and enough bytes of headroom for the new `.tmp` archive.
   - Prefer best-effort cleanup: emit an `error` event but continue to archive/log the current run when possible.
+---
+
+## 2026-02-05 22:28:29 CST - US-009
+- Implemented a single-page console UI with a left Stepper (Init / PRD / Convert / Fire) and a top bar that displays the project root.
+- Added a safe PRD preview panel that loads whitelisted files via `GET /api/fs/read` and renders the content in a result panel.
+- Added a best-effort SSE connection indicator (connects to `GET /api/stream`) and shows the last received message in the Fire step.
+- Files changed: `cmd/ohmyagentflow/main.go`, `internal/console/index_page.go`, `AGENTS.md`, `prd.json`, `progress.txt`
+- **Learnings for future iterations:**
+  - Keep the console UI HTML in `internal/console` using `html/template` so `cmd/ohmyagentflow/main.go` stays focused on wiring.
+  - Use the existing `FSReader` + `GET /api/fs/read` for safe previews (tasks/prd-*.md, `prd.json`, `progress.txt`) instead of reading files directly in the UI.
+  - Manual browser verification is still recommended; this iteration validated the HTML payload via `curl` but did not run a real browser session.
 ---

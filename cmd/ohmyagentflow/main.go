@@ -64,50 +64,18 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+		htmlBytes, err := console.RenderIndexHTML(console.IndexPageData{
+			SessionToken: sessionToken,
+			ProjectRoot:  projectRoot,
+		})
+		if err != nil {
+			log.Printf("warning: failed to render index page: %v", err)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <meta name="ohmyagentflow-session-token" content="` + sessionToken + `" />
-    <title>Oh My Agent Flow</title>
-    <script>
-      (function () {
-        const meta = document.querySelector('meta[name="ohmyagentflow-session-token"]');
-        const token = meta && meta.content ? meta.content : '';
-        if (!token) return;
-
-        const originalFetch = window.fetch.bind(window);
-        window.fetch = function (input, init) {
-          const requestInit = init || {};
-          const method = (requestInit.method || (input instanceof Request ? input.method : 'GET') || 'GET').toUpperCase();
-          const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
-          if (method !== 'POST' || !url.pathname.startsWith('/api/')) {
-            return originalFetch(input, requestInit);
-          }
-
-          if (input instanceof Request) {
-            const headers = new Headers(input.headers);
-            if (requestInit.headers) new Headers(requestInit.headers).forEach((v, k) => headers.set(k, v));
-            headers.set('X-Session-Token', token);
-            const nextRequest = new Request(input, Object.assign({}, requestInit, { headers }));
-            return originalFetch(nextRequest);
-          }
-
-          const headers = new Headers(requestInit.headers || {});
-          headers.set('X-Session-Token', token);
-          return originalFetch(input, Object.assign({}, requestInit, { headers }));
-        };
-      })();
-    </script>
-  </head>
-  <body>
-    <h1>Oh My Agent Flow</h1>
-    <p>Console server is running.</p>
-  </body>
-</html>
-`))
+		_, _ = w.Write(htmlBytes)
 	})
 
 	mux.HandleFunc("GET /api/fs/read", console.FSReadHandler(fsReader))
