@@ -3,6 +3,7 @@
 ## Codebase Patterns
 - `flowchart/` enforces `react-hooks/refs`: don’t read `ref.current` during render; compute initial state without refs and only use refs in callbacks/effects.
 - Prefer Go stdlib (`net/http`, `flag`, `net.Listen`) for the console to avoid external module download flakiness during development/CI.
+- Canonicalize the UI origin early: use `console.RedirectLocalhostTo127(...)` so browser requests land on `127.0.0.1` (helps strict Origin checks later).
 
 Started: Thu Feb  5 19:53:13 CST 2026
 ---
@@ -14,4 +15,13 @@ Started: Thu Feb  5 19:53:13 CST 2026
 - **Learnings for future iterations:**
   - The repo’s `flowchart/` lint rules forbid reading refs during render; keep ref reads inside callbacks/effects only.
   - Network/proxy access for Go modules may be unreliable; prefer stdlib until the console codebase is stable enough to vendor or pin deps.
+---
+
+## 2026-02-05 20:19:31 CST - US-002
+- Added a canonical-host middleware that 302-redirects `http://localhost:<port>` UI requests to `http://127.0.0.1:<port>`, preserving path + query.
+- Wired the console HTTP server to use the middleware so all future UI assets/API routes benefit automatically.
+- Files changed: `cmd/ohmyagentflow/main.go`, `internal/console/canonical_host.go`, `internal/console/canonical_host_test.go`, `prd.json`, `progress.txt`
+- **Learnings for future iterations:**
+  - Keep redirects limited to `GET`/`HEAD` so future `POST /api/*` semantics aren’t altered by a 302.
+  - The PRD asks for browser verification via a dev-browser skill; this iteration validated redirect behavior via `curl` instead.
 ---

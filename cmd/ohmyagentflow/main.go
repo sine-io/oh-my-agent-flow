@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -24,6 +25,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("startup error: %v", err)
 	}
+
+	actualPort := listener.Addr().(*net.TCPAddr).Port
+	canonicalHostPort := fmt.Sprintf("127.0.0.1:%d", actualPort)
 
 	fmt.Println(baseURL)
 
@@ -51,7 +55,7 @@ func main() {
 `))
 	})
 
-	server := &http.Server{Handler: mux}
+	server := &http.Server{Handler: console.RedirectLocalhostTo127(canonicalHostPort, mux)}
 	if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("server error: %v", err)
 	}
