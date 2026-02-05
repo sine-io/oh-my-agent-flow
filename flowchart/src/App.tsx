@@ -1,4 +1,4 @@
-import { useCallback, useState, useRef } from 'react';
+import { useCallback, useState, useRef, useMemo } from 'react';
 import type { Node, Edge, NodeChange, EdgeChange, Connection } from '@xyflow/react';
 import {
   ReactFlow,
@@ -229,7 +229,16 @@ function App() {
   const [visibleCount, setVisibleCount] = useState(1);
   const nodePositions = useRef<{ [key: string]: { x: number; y: number } }>({ ...positions });
 
-  const getNodes = (count: number) => {
+  const initialNodes = useMemo(() => {
+    const stepNodes = allSteps.map((step, index) => createNode(step, index < 1, positions[step.id]));
+    const noteNodes = notes.map(note => {
+      const noteVisible = 1 >= note.appearsWithStep;
+      return createNoteNode(note, noteVisible, positions[note.id]);
+    });
+    return [...stepNodes, ...noteNodes];
+  }, []);
+
+  const getNodes = useCallback((count: number) => {
     const stepNodes = allSteps.map((step, index) =>
       createNode(step, index < count, nodePositions.current[step.id])
     );
@@ -238,9 +247,8 @@ function App() {
       return createNoteNode(note, noteVisible, nodePositions.current[note.id]);
     });
     return [...stepNodes, ...noteNodes];
-  };
+  }, []);
 
-  const initialNodes = getNodes(1);
   const initialEdges = edgeConnections.map((conn, index) =>
     createEdge(conn, index < 0)
   );
@@ -299,7 +307,7 @@ function App() {
         )
       );
     }
-  }, [visibleCount, setNodes, setEdges]);
+  }, [getNodes, visibleCount, setNodes, setEdges]);
 
   const handlePrev = useCallback(() => {
     if (visibleCount > 1) {
@@ -313,14 +321,14 @@ function App() {
         )
       );
     }
-  }, [visibleCount, setNodes, setEdges]);
+  }, [getNodes, visibleCount, setNodes, setEdges]);
 
   const handleReset = useCallback(() => {
     setVisibleCount(1);
     nodePositions.current = { ...positions };
     setNodes(getNodes(1));
     setEdges(edgeConnections.map((conn, index) => createEdge(conn, index < 0)));
-  }, [setNodes, setEdges]);
+  }, [getNodes, setNodes, setEdges]);
 
   return (
     <div className="app-container">

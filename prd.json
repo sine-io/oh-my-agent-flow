@@ -1,0 +1,287 @@
+{
+  "project": "oh-my-agent-flow",
+  "branchName": "ralph/oh-my-agent-flow-bs-console",
+  "description": "Ship a local web console bundled in a single Go binary to init skills, generate/convert PRDs, and run/stop Ralph Fire with structured, replayable logs. The console must be safe-by-default (loopback only, strict Origin + session token, path/exec whitelists) and remain stable during long-running Fire sessions.",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Launch local server with stable Base URL and optional auto-open",
+      "description": "As a user, I want to run one binary in my project root and get a stable local URL (and optional auto-open) so that I can access the console immediately.",
+      "acceptanceCriteria": [
+        "Server listens only on `127.0.0.1` by default.",
+        "Default port behavior is “random free port” (equivalent to `--port 0`).",
+        "`--port <1..65535>` binds that port; if in use, startup fails with a clear error message.",
+        "Startup prints the canonical Base URL to stdout: `http://127.0.0.1:<port>`.",
+        "Auto-open attempts `open <url>` on macOS and `xdg-open <url>` on Linux; failures are warnings only.",
+        "`--no-open` disables auto-open.",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "Canonicalize origin by redirecting localhost to 127.0.0.1",
+      "description": "As a developer, I want a canonical origin so that Origin checks can be exact and reliable.",
+      "acceptanceCriteria": [
+        "If the user accesses the UI via `http://localhost:<port>`, server responds with `302` redirect to `http://127.0.0.1:<port>`.",
+        "All UI assets continue to load correctly after redirect.",
+        "Verify in browser using dev-browser skill",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "Enforce Origin + session token for all write APIs",
+      "description": "As a maintainer, I want all `POST /api/*` operations protected so that a local web page from another origin cannot trigger actions.",
+      "acceptanceCriteria": [
+        "Server generates a random 128-bit session token on startup.",
+        "UI HTML response includes the token via a meta tag `ohmyagentflow-session-token`.",
+        "Frontend reads the meta token and sends `X-Session-Token` on every `POST /api/*` request.",
+        "For requests with `Origin`, server allows only `http://127.0.0.1:<port>` or `http://localhost:<port>`.",
+        "If `Origin` is missing or `Origin: null`, server rejects the request (MVP behavior).",
+        "Rejections return a JSON error with a stable `code` and a human hint.",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "Restrict filesystem reads/writes to project root and whitelist",
+      "description": "As a user, I want the console to be safe with my filesystem so that it cannot read or write outside my project root.",
+      "acceptanceCriteria": [
+        "Server sets project root to process `cwd` at startup.",
+        "Any requested path is cleaned/normalized and must remain within project root; `..` escapes and absolute external paths are rejected.",
+        "Soft-link escape is prevented (reject or resolve and re-check within root).",
+        "Read whitelist allows only: `tasks/prd-*.md`, `prd.json`, `progress.txt` (and only within root).",
+        "Read size is limited (configurable; default ≤ 2MB); larger reads return `FS_READ_TOO_LARGE`.",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "Run-scoped SSE stream with replay support",
+      "description": "As a user, I want to see structured logs in real time and recover after disconnect so that I can follow long runs reliably.",
+      "acceptanceCriteria": [
+        "`GET /api/stream?runId=<id>&sinceSeq=<n>` streams events as SSE `data: <json>\\n\\n`.",
+        "Events within a run have `seq` starting at 1 and strictly increasing.",
+        "When `runId` is provided, server replays cached events with `seq > sinceSeq` before live streaming.",
+        "If replay is truncated due to server retention, server emits a `progress` event noting replay truncation.",
+        "When `runId` is omitted, streaming is “best effort” and replay is not guaranteed.",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-006",
+      "title": "Event governance to prevent browser and server overload",
+      "description": "As a maintainer, I want output limits and truncation so that a noisy process cannot crash the UI or server.",
+      "acceptanceCriteria": [
+        "`process_stdout/stderr` event text is truncated per-message (default 8KB) and marks `data.truncated=true` when truncated.",
+        "Server retains only the last `N=5000` events per run in memory.",
+        "When run output exceeds governance limits, server emits a user-visible warning via `progress` or `error` event.",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-007",
+      "title": "Archive complete event stream to JSONL per run",
+      "description": "As a user, I want a full run archive on disk so that I can inspect logs after closing the browser.",
+      "acceptanceCriteria": [
+        "Server writes `.ohmyagentflow/runs/<runId>.jsonl` with one JSON event per line.",
+        "During the run, server writes to `.jsonl.tmp` and atomically renames to `.jsonl` on completion.",
+        "Archive file has a max size (default 50MB); exceeding it stops writing and emits an `error` event.",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-008",
+      "title": "Cleanup archived runs by count and total size",
+      "description": "As a user, I want archive cleanup so that disk usage does not grow without bound.",
+      "acceptanceCriteria": [
+        "Before starting a new archive, server performs cleanup in `.ohmyagentflow/runs/`.",
+        "Retain at most `K=50` most-recent run archives and at most `1GB` total directory size.",
+        "Cleanup deletes oldest-by-mtime files until both thresholds are satisfied.",
+        "Cleanup failures emit an `error` event but do not block the current run.",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-009",
+      "title": "Implement Stepper UI and project root display",
+      "description": "As a user, I want a single-page console with clear step navigation and status so that I can follow the intended workflow.",
+      "acceptanceCriteria": [
+        "UI is a single page with a left Stepper: Init / PRD / Convert / Fire.",
+        "Top bar shows project root (read-only) and current run status.",
+        "Each step provides inputs, primary action button, and result/preview panel as applicable.",
+        "Verify in browser using dev-browser skill",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-010",
+      "title": "Init installs local skills without executing shell",
+      "description": "As a user, I want Init to prepare `.codex/skills` safely so that my repo is ready to run Ralph without shell injection risk.",
+      "acceptanceCriteria": [
+        "`POST /api/init` creates `.codex/skills/...` and copies required skill files using Go filesystem operations (no shell).",
+        "Response includes `created`, `overwritten`, and `warnings` lists.",
+        "If a source file is missing, response returns a clear `NOT_FOUND`-style error.",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-011",
+      "title": "Questionnaire PRD generator produces convertable PRD template",
+      "description": "As a user, I want a structured form to generate a PRD that Convert can always parse so that I can proceed to Fire without manual formatting fixes.",
+      "acceptanceCriteria": [
+        "`POST /api/prd/generate` accepts the documented JSON payload and writes `tasks/prd-<feature_slug>.md`.",
+        "Generated PRD includes YAML front matter with `schema: ohmyagentflow/prd@1` and required fields (`feature_slug`, `title`, `description`).",
+        "Generated body includes required headings and story structure as specified in the design doc.",
+        "Each story’s Acceptance Criteria includes `\"Typecheck passes\"` (auto-added if missing).",
+        "UI shows a live PRD preview before saving.",
+        "Verify in browser using dev-browser skill",
+        "Typecheck passes"
+      ],
+      "priority": 11,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-012",
+      "title": "Chat PRD mode uses sessions and slot-state to converge on the same template",
+      "description": "As a user, I want a chat-based PRD experience that still converges to the deterministic PRD template so that I can iterate naturally without breaking Convert.",
+      "acceptanceCriteria": [
+        "`POST /api/prd/chat/session` creates a session with TTL and returns `sessionId`.",
+        "`POST /api/prd/chat/message` accepts a user message and returns updated `slotState` including `missing` and `warnings`.",
+        "`GET /api/prd/chat/state?sessionId=...` returns current `slotState` (including `missing`).",
+        "`POST /api/prd/chat/finalize` validates required fields; if missing, returns a structured gap list without writing a file.",
+        "On successful finalize, server writes `tasks/prd-<feature_slug>.md` in the exact same template as questionnaire output.",
+        "Verify in browser using dev-browser skill",
+        "Typecheck passes"
+      ],
+      "priority": 12,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-013",
+      "title": "Integrate LLM provider for chat mode (Codex or Claude)",
+      "description": "As a user, I want the chat PRD mode to be powered by an LLM so that it can extract/organize requirements into slot-state efficiently.",
+      "acceptanceCriteria": [
+        "Chat mode supports selecting provider/tool: `codex` or `claude`.",
+        "Server never writes raw model output directly as PRD; it must update structured slot-state first.",
+        "Provider errors return a structured error code and a retry hint without crashing the server.",
+        "No secrets are ever streamed via SSE events (redact if needed).",
+        "Typecheck passes"
+      ],
+      "priority": 13,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-014",
+      "title": "Convert PRD markdown to root prd.json with precise errors",
+      "description": "As a user, I want Convert to deterministically generate `prd.json` and provide actionable parse errors so that I can fix format issues quickly.",
+      "acceptanceCriteria": [
+        "`POST /api/convert` accepts `prdPath` and refuses non-whitelisted paths.",
+        "Convert validates front matter, required sections, story headers, description line, and checkbox AC items.",
+        "On parse errors, response returns `{code,message,file,location:{line,column},hint}` matching the documented error schema.",
+        "On success, server writes `prd.json` and returns a summary plus the JSON content.",
+        "If `prd.json` already exists, server writes a timestamped backup path and reports it in the response.",
+        "Typecheck passes"
+      ],
+      "priority": 14,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-015",
+      "title": "Fire runs Ralph via bash with strict validation and single-run concurrency",
+      "description": "As a user, I want to start Fire from the UI and have it run the same logic as `ralph-codex.sh` so that behavior matches the existing workflow.",
+      "acceptanceCriteria": [
+        "`POST /api/fire` requires `tool ∈ {codex, claude}` and `maxIterations ∈ 1..200`.",
+        "If another Fire run is already active, server returns `RESOURCE_CONFLICT`.",
+        "If `prd.json` is missing, server returns `VALIDATION_ERROR` with a hint to run Convert.",
+        "Server executes only the allowed command form: `bash <abs>/ralph-codex.sh --tool <tool> <maxIterations>`.",
+        "All stdout/stderr from the process is streamed as structured SSE events.",
+        "Verify in browser using dev-browser skill",
+        "Typecheck passes"
+      ],
+      "priority": 15,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-016",
+      "title": "Stop terminates the entire Fire process tree reliably",
+      "description": "As a user, I want to stop Fire safely so that no orphan child processes continue running.",
+      "acceptanceCriteria": [
+        "Fire starts in a new process group and server records the PGID.",
+        "`POST /api/fire/stop` sends `SIGINT` to the process group, waits up to 5 seconds, then sends `SIGKILL` if needed.",
+        "Stop is idempotent; repeated stop calls succeed with `stopping=true` or similar status.",
+        "`run_finished` includes `reason=stopped` and includes `signal` and `exitCode` semantics as documented.",
+        "Typecheck passes"
+      ],
+      "priority": 16,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-017",
+      "title": "Detect COMPLETE during Fire and emit progress events",
+      "description": "As a user, I want the console to surface iteration progress and completion status so that I can understand what Ralph is doing without parsing raw logs.",
+      "acceptanceCriteria": [
+        "Server emits `progress` events with fields: `tool`, `iteration`, `maxIterations`, `phase`, `completeDetected`, and optional `note`.",
+        "Server detects `<promise>COMPLETE</promise>` and emits `phase=complete_detected` with `completeDetected=true`.",
+        "UI groups and displays logs by step and iteration using `progress` events (not just stdout parsing).",
+        "Verify in browser using dev-browser skill",
+        "Typecheck passes"
+      ],
+      "priority": 17,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-018",
+      "title": "Log viewer is virtualized, deduplicated by seq, and batched for performance",
+      "description": "As a user, I want the log viewer to stay smooth even with thousands of events so that I can use the console for long runs.",
+      "acceptanceCriteria": [
+        "UI uses a virtualized list for event rendering (no full DOM render of all events).",
+        "UI retains only the last `N=5000` events per run, dropping older ones.",
+        "UI deduplicates events by `seq` per `runId` (replay duplicates do not re-render).",
+        "UI batches SSE updates (e.g., every ~100ms or `requestAnimationFrame`) to avoid per-event re-render.",
+        "Verify in browser using dev-browser skill",
+        "Typecheck passes"
+      ],
+      "priority": 18,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}

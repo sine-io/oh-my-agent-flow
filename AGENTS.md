@@ -7,6 +7,9 @@ Ralph is an autonomous AI agent loop that runs AI coding tools (Amp or Claude Co
 ## Commands
 
 ```bash
+# Run the local console (Go)
+go run ./cmd/ohmyagentflow --port 0
+
 # Run the flowchart dev server
 cd flowchart && npm run dev
 

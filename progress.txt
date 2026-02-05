@@ -1,0 +1,17 @@
+# Ralph Progress Log
+
+## Codebase Patterns
+- `flowchart/` enforces `react-hooks/refs`: don’t read `ref.current` during render; compute initial state without refs and only use refs in callbacks/effects.
+- Prefer Go stdlib (`net/http`, `flag`, `net.Listen`) for the console to avoid external module download flakiness during development/CI.
+
+Started: Thu Feb  5 19:53:13 CST 2026
+---
+
+## 2026-02-05 20:08:07 CST - US-001
+- Implemented a minimal local console server that binds to `127.0.0.1` and supports `--port` (default random free port) and `--no-open`.
+- Startup prints the canonical Base URL to stdout and attempts OS-specific auto-open (`open` on macOS, `xdg-open` on Linux) with warning-only failures.
+- Files changed: `go.mod`, `cmd/ohmyagentflow/main.go`, `internal/console/listen.go`, `internal/console/listen_test.go`, `AGENTS.md`, `flowchart/src/App.tsx`
+- **Learnings for future iterations:**
+  - The repo’s `flowchart/` lint rules forbid reading refs during render; keep ref reads inside callbacks/effects only.
+  - Network/proxy access for Go modules may be unreliable; prefer stdlib until the console codebase is stable enough to vendor or pin deps.
+---
