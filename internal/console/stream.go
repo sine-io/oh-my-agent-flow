@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +18,8 @@ import (
 const DefaultMaxEventsPerRun = 5000
 const DefaultMaxProcessTextBytes = 8 * 1024
 const DefaultMaxArchiveBytes = 50 * 1024 * 1024
+const DefaultArchiveRetentionCount = 50
+const DefaultArchiveRetentionBytes = 1024 * 1024 * 1024
 
 type StreamEvent struct {
 	TS    string `json:"ts"`
@@ -71,6 +74,9 @@ type runArchiveState struct {
 	stopped      bool
 	errorEmitted bool
 	finalized    bool
+
+	cleanupAttempted    bool
+	cleanupErrorEmitted bool
 }
 
 func NewStreamHub(cfg StreamHubConfig) *StreamHub {
@@ -309,6 +315,49 @@ func (h *StreamHub) archiveEventLocked(event StreamEvent) *StreamEvent {
 	}
 
 	if arch.f == nil && !arch.stopped {
+		if !arch.cleanupAttempted {
+			arch.cleanupAttempted = true
+			protected := make(map[string]struct{})
+			for _, a := range h.archives {
+				if a == nil || a.finalized || a.f == nil {
+					continue
+				}
+				if a.tmpPath != "" {
+					protected[a.tmpPath] = struct{}{}
+				}
+				if a.finalPath != "" {
+					protected[a.finalPath] = struct{}{}
+				}
+			}
+
+			maxFiles := DefaultArchiveRetentionCount
+			if maxFiles > 0 {
+				maxFiles-- // reserve a slot for this new archive.
+			}
+			maxBytes := int64(DefaultArchiveRetentionBytes)
+			if h.maxArchiveBytes > 0 && maxBytes > h.maxArchiveBytes {
+				maxBytes -= h.maxArchiveBytes // reserve max archive headroom.
+			} else if h.maxArchiveBytes > 0 {
+				maxBytes = 0
+			}
+
+			if err := cleanupArchiveDir(h.archiveDir, maxFiles, maxBytes, protected); err != nil && !arch.cleanupErrorEmitted {
+				arch.cleanupErrorEmitted = true
+				return &StreamEvent{
+					RunID: event.RunID,
+					Type:  "error",
+					Step:  "archive",
+					Level: "error",
+					Data: map[string]any{
+						"code":    "ARCHIVE_CLEANUP_FAILED",
+						"message": "Failed to cleanup old run archives; continuing without blocking this run.",
+						"dir":     h.archiveDir,
+						"error":   err.Error(),
+					},
+				}
+			}
+		}
+
 		if err := os.MkdirAll(h.archiveDir, 0o755); err != nil {
 			arch.stopped = true
 			if !arch.errorEmitted {
@@ -491,6 +540,91 @@ func (h *StreamHub) archiveEventLocked(event StreamEvent) *StreamEvent {
 		arch.finalized = true
 	}
 
+	return nil
+}
+
+type archiveFileEntry struct {
+	path    string
+	modTime time.Time
+	size    int64
+}
+
+func cleanupArchiveDir(dir string, maxFiles int, maxTotalBytes int64, protected map[string]struct{}) error {
+	if dir == "" {
+		return nil
+	}
+	if maxFiles < 0 {
+		maxFiles = 0
+	}
+	if maxTotalBytes < 0 {
+		maxTotalBytes = 0
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	files := make([]archiveFileEntry, 0, len(entries))
+	var total int64
+
+	for _, ent := range entries {
+		if ent.IsDir() {
+			continue
+		}
+		path := filepath.Join(dir, ent.Name())
+		if protected != nil {
+			if _, ok := protected[path]; ok {
+				continue
+			}
+		}
+
+		info, err := os.Lstat(path)
+		if err != nil {
+			// Best-effort: ignore races (e.g., file removed concurrently).
+			continue
+		}
+		if info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			size := info.Size()
+			files = append(files, archiveFileEntry{path: path, modTime: info.ModTime(), size: size})
+			total += size
+		}
+	}
+
+	if len(files) == 0 {
+		return nil
+	}
+
+	sort.Slice(files, func(i, j int) bool {
+		if files[i].modTime.Equal(files[j].modTime) {
+			return files[i].path < files[j].path
+		}
+		return files[i].modTime.Before(files[j].modTime)
+	})
+
+	var firstErr error
+	for (maxFiles > 0 && len(files) > maxFiles) || (maxTotalBytes > 0 && total > maxTotalBytes) {
+		oldest := files[0]
+		files = files[1:]
+		if err := os.Remove(oldest.path); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		total -= oldest.size
+	}
+
+	if firstErr != nil {
+		return firstErr
+	}
+	// If we couldn't reach limits (e.g., due to remove failures), still surface an error.
+	if (maxFiles > 0 && len(files) > maxFiles) || (maxTotalBytes > 0 && total > maxTotalBytes) {
+		return fmt.Errorf("archive cleanup incomplete: remainingFiles=%d remainingBytes=%d", len(files), total)
+	}
 	return nil
 }
 

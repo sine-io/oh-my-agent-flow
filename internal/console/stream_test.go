@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -286,6 +287,94 @@ func TestStreamHub_ArchiveMaxSizeStopsWritingAndEmitsErrorEvent(t *testing.T) {
 	}
 	if info.Size() > 300 {
 		t.Fatalf("expected archive size <= 300 bytes, got %d", info.Size())
+	}
+}
+
+func TestStreamHub_ArchiveCleanupReservesSlotForNewArchive(t *testing.T) {
+	archiveDir := filepath.Join(t.TempDir(), "runs")
+	if err := os.MkdirAll(archiveDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll error: %v", err)
+	}
+
+	// Create 55 archives with increasing mtimes (oldest first).
+	base := time.Now().Add(-2 * time.Hour)
+	for i := 0; i < 55; i++ {
+		name := filepath.Join(archiveDir, "r"+strconv.Itoa(i)+".jsonl")
+		if err := os.WriteFile(name, []byte("x"), 0o644); err != nil {
+			t.Fatalf("WriteFile %s: %v", name, err)
+		}
+		ts := base.Add(time.Duration(i) * time.Minute)
+		if err := os.Chtimes(name, ts, ts); err != nil {
+			t.Fatalf("Chtimes %s: %v", name, err)
+		}
+	}
+
+	hub := NewStreamHub(StreamHubConfig{ArchiveDir: archiveDir})
+	hub.Publish(StreamEvent{RunID: "new", Type: "run_started", Step: "fire", Level: "info"})
+
+	ents, err := os.ReadDir(archiveDir)
+	if err != nil {
+		t.Fatalf("ReadDir error: %v", err)
+	}
+	var files int
+	for _, ent := range ents {
+		if ent.IsDir() {
+			continue
+		}
+		files++
+	}
+	if files != DefaultArchiveRetentionCount {
+		t.Fatalf("expected %d files after cleanup+new archive, got %d", DefaultArchiveRetentionCount, files)
+	}
+
+	if _, err := os.Stat(filepath.Join(archiveDir, "r0.jsonl")); err == nil {
+		t.Fatalf("expected oldest archive to be removed")
+	}
+	if _, err := os.Stat(filepath.Join(archiveDir, "r5.jsonl")); err == nil {
+		t.Fatalf("expected oldest archives to be removed")
+	}
+	if _, err := os.Stat(filepath.Join(archiveDir, "r6.jsonl")); err != nil {
+		t.Fatalf("expected newer archive to remain, stat error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(archiveDir, "r54.jsonl")); err != nil {
+		t.Fatalf("expected newest archive to remain, stat error: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(archiveDir, "new.jsonl.tmp")); err != nil {
+		t.Fatalf("expected new tmp archive to exist, stat error: %v", err)
+	}
+}
+
+func TestCleanupArchiveDir_DeletesOldestUntilSizeWithinLimit(t *testing.T) {
+	dir := t.TempDir()
+	base := time.Now().Add(-1 * time.Hour)
+
+	paths := []string{
+		filepath.Join(dir, "a.jsonl"),
+		filepath.Join(dir, "b.jsonl"),
+		filepath.Join(dir, "c.jsonl"),
+	}
+	for i, p := range paths {
+		if err := os.WriteFile(p, []byte(strings.Repeat("x", 10)), 0o644); err != nil {
+			t.Fatalf("WriteFile %s: %v", p, err)
+		}
+		ts := base.Add(time.Duration(i) * time.Minute)
+		if err := os.Chtimes(p, ts, ts); err != nil {
+			t.Fatalf("Chtimes %s: %v", p, err)
+		}
+	}
+
+	if err := cleanupArchiveDir(dir, 10, 15, nil); err != nil {
+		t.Fatalf("cleanupArchiveDir error: %v", err)
+	}
+	if _, err := os.Stat(paths[0]); err == nil {
+		t.Fatalf("expected oldest file to be removed")
+	}
+	if _, err := os.Stat(paths[1]); err == nil {
+		t.Fatalf("expected middle file to be removed")
+	}
+	if _, err := os.Stat(paths[2]); err != nil {
+		t.Fatalf("expected newest file to remain, stat error: %v", err)
 	}
 }
 

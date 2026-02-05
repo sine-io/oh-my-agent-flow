@@ -8,6 +8,7 @@
 - For filesystem reads, use `console.NewFSReader(...)` + `FSReadHandler(...)` so paths are forced under project root, symlink escapes are blocked, reads are whitelisted, and file size is capped.
 - For SSE logs, use `console.NewStreamHub(...)` + `console.StreamHandler(...)`; publish events via `hub.Publish(StreamEvent{...})` and clients can reconnect with `sinceSeq` for replay.
 - `StreamHub` can archive run events to disk as JSONL (`.ohmyagentflow/runs/<runId>.jsonl`) with `.tmp` + atomic rename on `run_finished` (config via `StreamHubConfig.ArchiveDir` / `MaxArchiveBytes`).
+- Before starting a new run archive, `StreamHub` performs a best-effort cleanup in `.ohmyagentflow/runs/` to cap total archives by count and total directory size (deletes oldest-by-mtime first; failures are non-blocking and emitted as an `error` event).
 - `StreamHub` enforces governance for noisy process output: truncates `process_stdout/stderr` `data.text` (default 8KB) and emits a one-time `progress` warning per run (config via `StreamHubConfig.MaxProcessTextBytes`).
 
 Started: Thu Feb  5 19:53:13 CST 2026
@@ -76,4 +77,14 @@ Started: Thu Feb  5 19:53:13 CST 2026
 - **Learnings for future iterations:**
   - Always sanitize `runId` before using it as a filename to avoid path traversal or invalid paths.
   - If an archive is stopped due to size limits, still finalize it on `run_finished` by closing and renaming the `.tmp` file.
+---
+
+## 2026-02-05 22:18:43 CST - US-008
+- Added best-effort archive cleanup before starting a new run archive in `.ohmyagentflow/runs/`, enforcing retention by file count and total directory size (delete oldest-by-mtime first).
+- Cleanup failures emit an `error` event (`code=ARCHIVE_CLEANUP_FAILED`) but do not block the current run.
+- Added tests for cleanup-by-count and cleanup-by-size behavior.
+- Files changed: `internal/console/stream.go`, `internal/console/stream_test.go`, `AGENTS.md`, `prd.json`, `progress.txt`
+- **Learnings for future iterations:**
+  - To keep retention limits true even while a new run is starting, cleanup reserves one “slot” and enough bytes of headroom for the new `.tmp` archive.
+  - Prefer best-effort cleanup: emit an `error` event but continue to archive/log the current run when possible.
 ---

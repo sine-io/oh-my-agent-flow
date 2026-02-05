@@ -60,4 +60,5 @@ npm run dev
 - For local-console filesystem access, route all user-supplied paths through `internal/console/FSReader` to enforce project-root containment, symlink-escape prevention, whitelisting, and max read size.
 - For SSE logs, use `internal/console/StreamHub` + `StreamHandler` for run-scoped `seq` ordering, retention, and `sinceSeq` replay (and governance: truncate noisy `process_stdout/stderr` messages and emit a warning once per run).
 - `StreamHub` also archives run streams to `.ohmyagentflow/runs/<runId>.jsonl` (writes `.tmp` during the run, renames on `run_finished`, size cap via `StreamHubConfig.MaxArchiveBytes`).
+- Before opening a new `.ohmyagentflow/runs/*.jsonl.tmp`, `StreamHub` performs best-effort cleanup in the archive dir (retention by count + total size; deletes oldest-by-mtime).
 - Always update AGENTS.md with discovered patterns for future iterations
