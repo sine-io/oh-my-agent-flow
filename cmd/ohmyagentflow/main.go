@@ -37,6 +37,18 @@ func main() {
 		log.Fatalf("startup error: %v", err)
 	}
 
+	projectRoot, err := os.Getwd()
+	if err != nil {
+		log.Fatalf("startup error: %v", err)
+	}
+	fsReader, err := console.NewFSReader(console.FSReadConfig{
+		ProjectRoot: projectRoot,
+		MaxBytes:    console.DefaultMaxReadBytes,
+	})
+	if err != nil {
+		log.Fatalf("startup error: %v", err)
+	}
+
 	fmt.Println(baseURL)
 
 	if !*noOpen {
@@ -92,6 +104,8 @@ func main() {
 </html>
 `))
 	})
+
+	mux.HandleFunc("GET /api/fs/read", console.FSReadHandler(fsReader))
 
 	mux.HandleFunc("POST /api/ping", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")

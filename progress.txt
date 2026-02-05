@@ -5,6 +5,7 @@
 - Prefer Go stdlib (`net/http`, `flag`, `net.Listen`) for the console to avoid external module download flakiness during development/CI.
 - Canonicalize the UI origin early: use `console.RedirectLocalhostTo127(...)` so browser requests land on `127.0.0.1` (helps strict Origin checks later).
 - Protect all `POST /api/*` routes using `console.RequireWriteAuth(...)` (Origin allowlist + `X-Session-Token`), and inject the token into the UI via `<meta name="ohmyagentflow-session-token" ...>`.
+- For filesystem reads, use `console.NewFSReader(...)` + `FSReadHandler(...)` so paths are forced under project root, symlink escapes are blocked, reads are whitelisted, and file size is capped.
 
 Started: Thu Feb  5 19:53:13 CST 2026
 ---
@@ -35,4 +36,13 @@ Started: Thu Feb  5 19:53:13 CST 2026
 - **Learnings for future iterations:**
   - Browsers reliably send `Origin` on `fetch()` POSTs; requiring `Origin` + a per-run session token is a simple CSRF-style guard for local consoles.
   - Keep the auth middleware narrow (only `POST` + `/api/` prefix) so non-write UI routes remain unaffected.
+---
+
+## 2026-02-05 21:35:48 CST - US-004
+- Added a safe filesystem reader rooted at process `cwd` with strict path normalization, project-root containment checks, symlink escape prevention, a read whitelist, and a default 2 MiB max read size.
+- Implemented `GET /api/fs/read?path=<relative>` for read-only previews of `tasks/prd-*.md`, `prd.json`, and `progress.txt`.
+- Files changed: `cmd/ohmyagentflow/main.go`, `internal/console/api_error.go`, `internal/console/fs_read.go`, `internal/console/fs_read_test.go`, `internal/console/write_auth.go`, `internal/console/write_auth_test.go`, `AGENTS.md`, `prd.json`, `progress.txt`
+- **Learnings for future iterations:**
+  - Keep all user-supplied filesystem paths as project-relative and validate through `FSReader` before doing any `os.Open`/`os.ReadFile`.
+  - Prefer rejecting oversized reads with `FS_READ_TOO_LARGE` (413) over truncation to keep behavior predictable for preview/highlighting.
 ---

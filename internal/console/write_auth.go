@@ -3,7 +3,6 @@ package console
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"net/http"
 	"strings"
 )
@@ -11,12 +10,6 @@ import (
 type WriteAuthConfig struct {
 	SessionToken   string
 	AllowedOrigins []string
-}
-
-type apiError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-	Hint    string `json:"hint,omitempty"`
 }
 
 func GenerateSessionToken() (string, error) {
@@ -41,7 +34,7 @@ func RequireWriteAuth(next http.Handler, cfg WriteAuthConfig) http.Handler {
 
 		origin := r.Header.Get("Origin")
 		if origin == "" || origin == "null" {
-			writeAPIError(w, http.StatusForbidden, apiError{
+			WriteAPIError(w, http.StatusForbidden, APIError{
 				Code:    "ORIGIN_REQUIRED",
 				Message: "Origin header is required for write operations.",
 				Hint:    "Open the console UI at http://127.0.0.1 and retry from the same page (not a different origin).",
@@ -49,7 +42,7 @@ func RequireWriteAuth(next http.Handler, cfg WriteAuthConfig) http.Handler {
 			return
 		}
 		if _, ok := allowed[origin]; !ok {
-			writeAPIError(w, http.StatusForbidden, apiError{
+			WriteAPIError(w, http.StatusForbidden, APIError{
 				Code:    "ORIGIN_NOT_ALLOWED",
 				Message: "Origin is not allowed for write operations.",
 				Hint:    "Use the console UI that was started by this server and avoid cross-site requests.",
@@ -59,7 +52,7 @@ func RequireWriteAuth(next http.Handler, cfg WriteAuthConfig) http.Handler {
 
 		token := r.Header.Get("X-Session-Token")
 		if token == "" {
-			writeAPIError(w, http.StatusForbidden, apiError{
+			WriteAPIError(w, http.StatusForbidden, APIError{
 				Code:    "SESSION_TOKEN_REQUIRED",
 				Message: "Session token is required for write operations.",
 				Hint:    "Reload the console UI page to receive a fresh session token, then retry.",
@@ -67,7 +60,7 @@ func RequireWriteAuth(next http.Handler, cfg WriteAuthConfig) http.Handler {
 			return
 		}
 		if cfg.SessionToken == "" || token != cfg.SessionToken {
-			writeAPIError(w, http.StatusForbidden, apiError{
+			WriteAPIError(w, http.StatusForbidden, APIError{
 				Code:    "SESSION_TOKEN_INVALID",
 				Message: "Session token is invalid.",
 				Hint:    "Reload the console UI page to receive a new token, then retry.",
@@ -77,10 +70,4 @@ func RequireWriteAuth(next http.Handler, cfg WriteAuthConfig) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
-}
-
-func writeAPIError(w http.ResponseWriter, status int, err apiError) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(err)
 }

@@ -73,7 +73,7 @@ func TestRequireWriteAuth_RejectsMissingOrigin(t *testing.T) {
 		t.Fatalf("expected 403, got %d (%s)", rr.Code, rr.Body.String())
 	}
 
-	var got apiError
+	var got APIError
 	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
 		t.Fatalf("unmarshal error: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestRequireWriteAuth_RejectsOriginNull(t *testing.T) {
 		t.Fatalf("expected 403, got %d (%s)", rr.Code, rr.Body.String())
 	}
 
-	var got apiError
+	var got APIError
 	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
 		t.Fatalf("unmarshal error: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestRequireWriteAuth_RejectsOriginNotAllowed(t *testing.T) {
 		t.Fatalf("expected 403, got %d (%s)", rr.Code, rr.Body.String())
 	}
 
-	var got apiError
+	var got APIError
 	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
 		t.Fatalf("unmarshal error: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestRequireWriteAuth_RejectsMissingToken(t *testing.T) {
 		t.Fatalf("expected 403, got %d (%s)", rr.Code, rr.Body.String())
 	}
 
-	var got apiError
+	var got APIError
 	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
 		t.Fatalf("unmarshal error: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestRequireWriteAuth_RejectsInvalidToken(t *testing.T) {
 		t.Fatalf("expected 403, got %d (%s)", rr.Code, rr.Body.String())
 	}
 
-	var got apiError
+	var got APIError
 	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
 		t.Fatalf("unmarshal error: %v", err)
 	}

@@ -57,4 +57,5 @@ npm run dev
 - Stories should be small enough to complete in one context window
 - For Codex, run `./ralph-codex.sh init --tool codex` once to install repo-local skills into `.codex/skills`
 - For local-console write endpoints, guard `POST /api/*` with strict Origin allowlisting plus a per-run `X-Session-Token` (see `internal/console/RequireWriteAuth` and the `<meta name="ohmyagentflow-session-token">` convention).
+- For local-console filesystem access, route all user-supplied paths through `internal/console/FSReader` to enforce project-root containment, symlink-escape prevention, whitelisting, and max read size.
 - Always update AGENTS.md with discovered patterns for future iterations
