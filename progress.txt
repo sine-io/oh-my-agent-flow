@@ -4,6 +4,7 @@
 - `flowchart/` enforces `react-hooks/refs`: don’t read `ref.current` during render; compute initial state without refs and only use refs in callbacks/effects.
 - Prefer Go stdlib (`net/http`, `flag`, `net.Listen`) for the console to avoid external module download flakiness during development/CI.
 - Canonicalize the UI origin early: use `console.RedirectLocalhostTo127(...)` so browser requests land on `127.0.0.1` (helps strict Origin checks later).
+- Protect all `POST /api/*` routes using `console.RequireWriteAuth(...)` (Origin allowlist + `X-Session-Token`), and inject the token into the UI via `<meta name="ohmyagentflow-session-token" ...>`.
 
 Started: Thu Feb  5 19:53:13 CST 2026
 ---
@@ -24,4 +25,14 @@ Started: Thu Feb  5 19:53:13 CST 2026
 - **Learnings for future iterations:**
   - Keep redirects limited to `GET`/`HEAD` so future `POST /api/*` semantics aren’t altered by a 302.
   - The PRD asks for browser verification via a dev-browser skill; this iteration validated redirect behavior via `curl` instead.
+---
+
+## 2026-02-05 20:26:51 CST - US-003
+- Added a startup session token and a `POST /api/*` auth middleware that enforces strict Origin allowlisting plus `X-Session-Token`.
+- Injected the session token into the root HTML via `<meta name="ohmyagentflow-session-token" ...>` and patched `window.fetch` to auto-attach `X-Session-Token` to all `POST /api/*` calls.
+- Added a minimal `POST /api/ping` endpoint for smoke testing.
+- Files changed: `cmd/ohmyagentflow/main.go`, `internal/console/write_auth.go`, `internal/console/write_auth_test.go`, `prd.json`, `progress.txt`
+- **Learnings for future iterations:**
+  - Browsers reliably send `Origin` on `fetch()` POSTs; requiring `Origin` + a per-run session token is a simple CSRF-style guard for local consoles.
+  - Keep the auth middleware narrow (only `POST` + `/api/` prefix) so non-write UI routes remain unaffected.
 ---

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -28,6 +29,13 @@ func main() {
 
 	actualPort := listener.Addr().(*net.TCPAddr).Port
 	canonicalHostPort := fmt.Sprintf("127.0.0.1:%d", actualPort)
+	baseOrigin127 := fmt.Sprintf("http://127.0.0.1:%d", actualPort)
+	baseOriginLocalhost := fmt.Sprintf("http://localhost:%d", actualPort)
+
+	sessionToken, err := console.GenerateSessionToken()
+	if err != nil {
+		log.Fatalf("startup error: %v", err)
+	}
 
 	fmt.Println(baseURL)
 
@@ -45,7 +53,37 @@ func main() {
 <html>
   <head>
     <meta charset="utf-8" />
+    <meta name="ohmyagentflow-session-token" content="` + sessionToken + `" />
     <title>Oh My Agent Flow</title>
+    <script>
+      (function () {
+        const meta = document.querySelector('meta[name="ohmyagentflow-session-token"]');
+        const token = meta && meta.content ? meta.content : '';
+        if (!token) return;
+
+        const originalFetch = window.fetch.bind(window);
+        window.fetch = function (input, init) {
+          const requestInit = init || {};
+          const method = (requestInit.method || (input instanceof Request ? input.method : 'GET') || 'GET').toUpperCase();
+          const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
+          if (method !== 'POST' || !url.pathname.startsWith('/api/')) {
+            return originalFetch(input, requestInit);
+          }
+
+          if (input instanceof Request) {
+            const headers = new Headers(input.headers);
+            if (requestInit.headers) new Headers(requestInit.headers).forEach((v, k) => headers.set(k, v));
+            headers.set('X-Session-Token', token);
+            const nextRequest = new Request(input, Object.assign({}, requestInit, { headers }));
+            return originalFetch(nextRequest);
+          }
+
+          const headers = new Headers(requestInit.headers || {});
+          headers.set('X-Session-Token', token);
+          return originalFetch(input, Object.assign({}, requestInit, { headers }));
+        };
+      })();
+    </script>
   </head>
   <body>
     <h1>Oh My Agent Flow</h1>
@@ -55,7 +93,17 @@ func main() {
 `))
 	})
 
-	server := &http.Server{Handler: console.RedirectLocalhostTo127(canonicalHostPort, mux)}
+	mux.HandleFunc("POST /api/ping", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	})
+
+	protected := console.RequireWriteAuth(mux, console.WriteAuthConfig{
+		SessionToken:   sessionToken,
+		AllowedOrigins: []string{baseOrigin127, baseOriginLocalhost},
+	})
+
+	server := &http.Server{Handler: console.RedirectLocalhostTo127(canonicalHostPort, protected)}
 	if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("server error: %v", err)
 	}
