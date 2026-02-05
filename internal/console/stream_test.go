@@ -11,6 +11,60 @@ import (
 	"time"
 )
 
+func TestStreamHub_TruncatesProcessOutputAndEmitsGovernanceWarningOnce(t *testing.T) {
+	hub := NewStreamHub(StreamHubConfig{MaxEventsPerRun: 100, SubscriberBufSize: 16, MaxProcessTextBytes: 5})
+	ch, unsub := hub.SubscribeAll()
+	t.Cleanup(unsub)
+
+	hub.Publish(StreamEvent{
+		RunID: "r1",
+		Type:  "process_stdout",
+		Step:  "fire",
+		Level: "info",
+		Data:  map[string]any{"text": "hello world"},
+	})
+
+	ev1 := mustReadStreamEvent(t, ch)
+	if ev1.Type != "process_stdout" {
+		t.Fatalf("expected process_stdout, got %q", ev1.Type)
+	}
+	data1, ok := ev1.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected data object, got %T", ev1.Data)
+	}
+	text1, _ := data1["text"].(string)
+	if len(text1) > 5 {
+		t.Fatalf("expected text <= 5 bytes, got %d", len(text1))
+	}
+	if data1["truncated"] != true {
+		t.Fatalf("expected truncated=true, got %v", data1["truncated"])
+	}
+
+	ev2 := mustReadStreamEvent(t, ch)
+	if ev2.Type != "progress" || ev2.Step != "governance" {
+		t.Fatalf("expected governance progress warning, got type=%q step=%q", ev2.Type, ev2.Step)
+	}
+
+	hub.Publish(StreamEvent{
+		RunID: "r1",
+		Type:  "process_stderr",
+		Step:  "fire",
+		Level: "info",
+		Data:  map[string]any{"text": "123456789"},
+	})
+
+	ev3 := mustReadStreamEvent(t, ch)
+	if ev3.Type != "process_stderr" {
+		t.Fatalf("expected process_stderr, got %q", ev3.Type)
+	}
+
+	select {
+	case ev := <-ch:
+		t.Fatalf("unexpected extra event after second truncated message: type=%q", ev.Type)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 func TestStreamHandler_ReplaysEventsWithSinceSeq(t *testing.T) {
 	hub := NewStreamHub(StreamHubConfig{MaxEventsPerRun: 100, SubscriberBufSize: 16})
 	hub.Publish(StreamEvent{RunID: "r1", Type: "process_stdout", Step: "fire", Level: "info", Data: map[string]any{"text": "a"}})
@@ -153,6 +207,21 @@ func mustReadNextSSEEvent(t *testing.T, r *bufio.Reader) StreamEvent {
 		return res.ev
 	case <-time.After(2 * time.Second):
 		t.Fatalf("timed out waiting for SSE event")
+		return StreamEvent{}
+	}
+}
+
+func mustReadStreamEvent(t *testing.T, ch <-chan StreamEvent) StreamEvent {
+	t.Helper()
+
+	select {
+	case ev, ok := <-ch:
+		if !ok {
+			t.Fatalf("stream channel closed")
+		}
+		return ev
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for stream event")
 		return StreamEvent{}
 	}
 }

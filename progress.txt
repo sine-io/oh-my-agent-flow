@@ -7,6 +7,7 @@
 - Protect all `POST /api/*` routes using `console.RequireWriteAuth(...)` (Origin allowlist + `X-Session-Token`), and inject the token into the UI via `<meta name="ohmyagentflow-session-token" ...>`.
 - For filesystem reads, use `console.NewFSReader(...)` + `FSReadHandler(...)` so paths are forced under project root, symlink escapes are blocked, reads are whitelisted, and file size is capped.
 - For SSE logs, use `console.NewStreamHub(...)` + `console.StreamHandler(...)`; publish events via `hub.Publish(StreamEvent{...})` and clients can reconnect with `sinceSeq` for replay.
+- `StreamHub` enforces governance for noisy process output: truncates `process_stdout/stderr` `data.text` (default 8KB) and emits a one-time `progress` warning per run (config via `StreamHubConfig.MaxProcessTextBytes`).
 
 Started: Thu Feb  5 19:53:13 CST 2026
 ---
@@ -56,4 +57,13 @@ Started: Thu Feb  5 19:53:13 CST 2026
 - **Learnings for future iterations:**
   - Avoid missing events between replay snapshot and live streaming by subscribing before writing replay events, then emitting any replay warnings as a new sequenced event.
   - Keep SSE payloads single-line JSON (`data: <json>\n\n`) and flush each event to avoid buffering surprises in browsers/proxies.
+---
+
+## 2026-02-05 21:54:26 CST - US-006
+- Added per-message governance for `process_stdout/stderr` events: truncate `data.text` to a max byte size (default 8KB) and mark `data.truncated=true`.
+- Emit a one-time per-run `progress` warning (`step=governance`) when truncation occurs so the UI can surface that output was trimmed.
+- Files changed: `internal/console/stream.go`, `internal/console/stream_test.go`, `AGENTS.md`, `prd.json`, `progress.txt`
+- **Learnings for future iterations:**
+  - Configure process output truncation via `StreamHubConfig.MaxProcessTextBytes` to keep tests fast and behavior predictable.
+  - `StreamHub.Publish(...)` may emit additional governance events; subscribers should rely on `runId` + `seq` for dedupe/ordering.
 ---

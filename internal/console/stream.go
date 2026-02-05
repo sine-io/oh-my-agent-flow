@@ -8,9 +8,11 @@ import (
 	"strconv"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const DefaultMaxEventsPerRun = 5000
+const DefaultMaxProcessTextBytes = 8 * 1024
 
 type StreamEvent struct {
 	TS    string `json:"ts"`
@@ -23,8 +25,9 @@ type StreamEvent struct {
 }
 
 type StreamHubConfig struct {
-	MaxEventsPerRun   int
-	SubscriberBufSize int
+	MaxEventsPerRun     int
+	SubscriberBufSize   int
+	MaxProcessTextBytes int
 }
 
 type StreamHub struct {
@@ -34,16 +37,19 @@ type StreamHub struct {
 	globalSubs map[chan StreamEvent]struct{}
 	runSubs    map[string]map[chan StreamEvent]struct{}
 
-	maxEventsPerRun    int
-	subscriberBufSize  int
-	emitReplayTruncate bool
+	maxEventsPerRun       int
+	subscriberBufSize     int
+	emitReplayTruncate    bool
+	maxProcessTextBytes   int
+	emitGovernanceWarning bool
 }
 
 type streamRunState struct {
 	nextSeq uint64
 	events  []StreamEvent
 
-	replayTruncateEmitted bool
+	replayTruncateEmitted    bool
+	governanceWarningEmitted bool
 }
 
 func NewStreamHub(cfg StreamHubConfig) *StreamHub {
@@ -55,20 +61,26 @@ func NewStreamHub(cfg StreamHubConfig) *StreamHub {
 	if bufSize <= 0 {
 		bufSize = 128
 	}
+	maxTextBytes := cfg.MaxProcessTextBytes
+	if maxTextBytes <= 0 {
+		maxTextBytes = DefaultMaxProcessTextBytes
+	}
 
 	return &StreamHub{
-		runs:               make(map[string]*streamRunState),
-		globalSubs:         make(map[chan StreamEvent]struct{}),
-		runSubs:            make(map[string]map[chan StreamEvent]struct{}),
-		maxEventsPerRun:    maxEvents,
-		subscriberBufSize:  bufSize,
-		emitReplayTruncate: true,
+		runs:                  make(map[string]*streamRunState),
+		globalSubs:            make(map[chan StreamEvent]struct{}),
+		runSubs:               make(map[string]map[chan StreamEvent]struct{}),
+		maxEventsPerRun:       maxEvents,
+		subscriberBufSize:     bufSize,
+		emitReplayTruncate:    true,
+		maxProcessTextBytes:   maxTextBytes,
+		emitGovernanceWarning: true,
 	}
 }
 
 func (h *StreamHub) Publish(event StreamEvent) StreamEvent {
 	h.mu.Lock()
-	event = h.publishLocked(event)
+	event, extra := h.governAndPublishLocked(event)
 	runID := event.RunID
 
 	globalChans := make([]chan StreamEvent, 0, len(h.globalSubs))
@@ -87,20 +99,106 @@ func (h *StreamHub) Publish(event StreamEvent) StreamEvent {
 	}
 	h.mu.Unlock()
 
-	for _, ch := range globalChans {
-		select {
-		case ch <- event:
-		default:
+	events := make([]StreamEvent, 0, 1+len(extra))
+	events = append(events, event)
+	events = append(events, extra...)
+	for _, ev := range events {
+		for _, ch := range globalChans {
+			select {
+			case ch <- ev:
+			default:
+			}
 		}
-	}
-	for _, ch := range runChans {
-		select {
-		case ch <- event:
-		default:
+		for _, ch := range runChans {
+			select {
+			case ch <- ev:
+			default:
+			}
 		}
 	}
 
 	return event
+}
+
+func (h *StreamHub) governAndPublishLocked(event StreamEvent) (published StreamEvent, extra []StreamEvent) {
+	event, didTruncate := h.governProcessOutput(event)
+	published = h.publishLocked(event)
+
+	if !didTruncate || published.RunID == "" || !h.emitGovernanceWarning {
+		return published, nil
+	}
+
+	state := h.runs[published.RunID]
+	if state == nil {
+		state = &streamRunState{}
+		h.runs[published.RunID] = state
+	}
+	if state.governanceWarningEmitted {
+		return published, nil
+	}
+	state.governanceWarningEmitted = true
+
+	warning := StreamEvent{
+		RunID: published.RunID,
+		Type:  "progress",
+		Step:  "governance",
+		Level: "warn",
+		Data: map[string]any{
+			"phase":            "warning",
+			"completeDetected": false,
+			"note":             fmt.Sprintf("process output truncated to %d bytes per message", h.maxProcessTextBytes),
+			"limitBytes":       h.maxProcessTextBytes,
+		},
+	}
+	warning = h.publishLocked(warning)
+	return published, []StreamEvent{warning}
+}
+
+func (h *StreamHub) governProcessOutput(event StreamEvent) (StreamEvent, bool) {
+	if event.Type != "process_stdout" && event.Type != "process_stderr" {
+		return event, false
+	}
+	data, ok := event.Data.(map[string]any)
+	if !ok {
+		return event, false
+	}
+	rawText, ok := data["text"].(string)
+	if !ok {
+		return event, false
+	}
+	truncatedText, didTruncate := truncateUTF8ToBytes(rawText, h.maxProcessTextBytes)
+	if !didTruncate {
+		return event, false
+	}
+
+	copied := make(map[string]any, len(data)+3)
+	for k, v := range data {
+		copied[k] = v
+	}
+	copied["text"] = truncatedText
+	copied["truncated"] = true
+	copied["originalBytes"] = len([]byte(rawText))
+	copied["limitBytes"] = h.maxProcessTextBytes
+	event.Data = copied
+	return event, true
+}
+
+func truncateUTF8ToBytes(s string, maxBytes int) (string, bool) {
+	if maxBytes <= 0 {
+		return "", len(s) > 0
+	}
+	if len(s) <= maxBytes {
+		return s, false
+	}
+	b := []byte(s)
+	if maxBytes > len(b) {
+		return s, false
+	}
+	cut := b[:maxBytes]
+	for len(cut) > 0 && !utf8.Valid(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return string(cut), true
 }
 
 func (h *StreamHub) publishLocked(event StreamEvent) StreamEvent {
