@@ -6,6 +6,7 @@
 - Canonicalize the UI origin early: use `console.RedirectLocalhostTo127(...)` so browser requests land on `127.0.0.1` (helps strict Origin checks later).
 - Protect all `POST /api/*` routes using `console.RequireWriteAuth(...)` (Origin allowlist + `X-Session-Token`), and inject the token into the UI via `<meta name="ohmyagentflow-session-token" ...>`.
 - For filesystem reads, use `console.NewFSReader(...)` + `FSReadHandler(...)` so paths are forced under project root, symlink escapes are blocked, reads are whitelisted, and file size is capped.
+- For SSE logs, use `console.NewStreamHub(...)` + `console.StreamHandler(...)`; publish events via `hub.Publish(StreamEvent{...})` and clients can reconnect with `sinceSeq` for replay.
 
 Started: Thu Feb  5 19:53:13 CST 2026
 ---
@@ -45,4 +46,14 @@ Started: Thu Feb  5 19:53:13 CST 2026
 - **Learnings for future iterations:**
   - Keep all user-supplied filesystem paths as project-relative and validate through `FSReader` before doing any `os.Open`/`os.ReadFile`.
   - Prefer rejecting oversized reads with `FS_READ_TOO_LARGE` (413) over truncation to keep behavior predictable for preview/highlighting.
+---
+
+## 2026-02-05 21:46:22 CST - US-005
+- Implemented a run-scoped SSE stream with in-memory retention and `sinceSeq` replay via `GET /api/stream?runId=<id>&sinceSeq=<n>`.
+- Added a global (no `runId`) best-effort live stream that receives all published events but does not guarantee replay.
+- When a client reconnects with a `sinceSeq` older than the retained buffer, the server emits a one-time `progress` event (`phase=error`) noting replay truncation.
+- Files changed: `cmd/ohmyagentflow/main.go`, `internal/console/stream.go`, `internal/console/stream_test.go`, `prd.json`, `progress.txt`
+- **Learnings for future iterations:**
+  - Avoid missing events between replay snapshot and live streaming by subscribing before writing replay events, then emitting any replay warnings as a new sequenced event.
+  - Keep SSE payloads single-line JSON (`data: <json>\n\n`) and flush each event to avoid buffering surprises in browsers/proxies.
 ---

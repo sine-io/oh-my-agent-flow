@@ -49,6 +49,8 @@ func main() {
 		log.Fatalf("startup error: %v", err)
 	}
 
+	streamHub := console.NewStreamHub(console.StreamHubConfig{})
+
 	fmt.Println(baseURL)
 
 	if !*noOpen {
@@ -106,6 +108,7 @@ func main() {
 	})
 
 	mux.HandleFunc("GET /api/fs/read", console.FSReadHandler(fsReader))
+	mux.HandleFunc("GET /api/stream", console.StreamHandler(streamHub))
 
 	mux.HandleFunc("POST /api/ping", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
