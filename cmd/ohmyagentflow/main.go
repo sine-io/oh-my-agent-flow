@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"time"
 
 	"github.com/snarktank/oh-my-agent-flow/internal/console"
 )
@@ -54,6 +55,14 @@ func main() {
 		ArchiveDir: filepath.Join(projectRoot, ".ohmyagentflow", "runs"),
 	})
 
+	prdChat, err := console.NewPRDChatService(console.PRDChatConfig{
+		ProjectRoot: projectRoot,
+		SessionTTL:  30 * time.Minute,
+	})
+	if err != nil {
+		log.Fatalf("startup error: %v", err)
+	}
+
 	fmt.Println(baseURL)
 
 	if !*noOpen {
@@ -83,6 +92,10 @@ func main() {
 
 	mux.HandleFunc("POST /api/init", console.InitHandler(console.InitConfig{ProjectRoot: projectRoot}))
 	mux.HandleFunc("POST /api/prd/generate", console.PRDGenerateHandler(console.PRDGenerateConfig{ProjectRoot: projectRoot}))
+	mux.HandleFunc("POST /api/prd/chat/session", prdChat.SessionHandler())
+	mux.HandleFunc("POST /api/prd/chat/message", prdChat.MessageHandler())
+	mux.HandleFunc("GET /api/prd/chat/state", prdChat.StateHandler())
+	mux.HandleFunc("POST /api/prd/chat/finalize", prdChat.FinalizeHandler())
 
 	mux.HandleFunc("POST /api/ping", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")

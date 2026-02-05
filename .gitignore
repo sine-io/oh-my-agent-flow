@@ -11,7 +11,7 @@
 .claude/
 
 # Codex local skills
-.codex/
+# .codex/
 
 # Local workspace folder created by init
 oh-my-agent-flow/
