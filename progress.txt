@@ -19,6 +19,7 @@
 - For Fire runs, use `POST /api/fire` + `console.NewFireService(...)` to execute only `bash <abs>/ralph-codex.sh --tool <codex|claude> <maxIterations>`, stream stdout/stderr via `StreamHub`, and reject concurrent runs with `RESOURCE_CONFLICT`.
 - For Fire Stop, don’t assume “parent exited” means the run is stopped; wait for the process group to be empty (e.g. `kill(-pgid, 0)` returns ESRCH) before returning success.
 - For Fire progress UX, emit `progress` events with `{tool,iteration,maxIterations,phase,completeDetected,note}` and drive UI grouping from those events (not from parsing raw stdout).
+- For high-volume SSE output in the console UI, render logs via a virtualized fixed-row list, batch incoming events (~100ms), and dedupe by `{runId,seq}` to keep the browser responsive.
 
 Started: Thu Feb  5 19:53:13 CST 2026
 ---
@@ -189,4 +190,14 @@ Started: Thu Feb  5 19:53:13 CST 2026
 - **Learnings for future iterations:**
   - Keep `maxIterations` in progress events sourced from the Fire request/config (don’t trust process output to define it).
   - For safe browser verification, run the console from a temp project root with a dummy `ralph-codex.sh` so Fire streaming can be exercised without invoking real agent loops.
+---
+
+## 2026-02-06 20:01:26 CST - US-018
+- Replaced the Fire log output with a virtualized list to avoid rendering thousands of DOM nodes at once.
+- Batched SSE handling (~80ms) and deduped events by `{runId, seq}`; retained only the last `N=5000` events per run.
+- Added auto-scroll toggle that disables itself when the user scrolls up.
+- Files changed: `internal/console/index_page.go`, `prd.json`, `progress.txt`
+- **Learnings for future iterations:**
+  - For log streams, prefer batched state updates + `requestAnimationFrame` rendering, and cap per-run retention to avoid runaway memory growth.
+  - Fixed-height row virtualization is the simplest approach in plain JS; keep each rendered row single-line (sanitize newlines) to preserve constant row height.
 ---

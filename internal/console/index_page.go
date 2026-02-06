@@ -249,6 +249,49 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
         white-space: pre;
       }
 
+      .loghead {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 10px;
+        flex-wrap: wrap;
+      }
+      .logview {
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: rgba(0,0,0,0.20);
+        height: min(62vh, 560px);
+        overflow: auto;
+        position: relative;
+        font-family: var(--mono);
+        font-size: 12px;
+        line-height: 18px;
+      }
+      .logitems {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+      }
+      .logrow {
+        height: 18px;
+        line-height: 18px;
+        padding: 0 10px;
+        white-space: pre;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        border-bottom: 1px solid rgba(255,255,255,0.06);
+      }
+      .logrow.header {
+        font-weight: 650;
+        color: var(--muted);
+        background: rgba(255,255,255,0.04);
+      }
+      .logrow.bad { color: var(--bad); }
+      .logrow.good { color: var(--good); }
+      .logrow.warn { color: var(--warn); }
+
       .kv {
         display: grid;
         grid-template-columns: 120px 1fr;
@@ -586,7 +629,14 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
               </div>
               <div class="panel">
                 <h2>Run log</h2>
-                <pre id="fire-last">Waiting for events…</pre>
+                <div class="loghead">
+                  <div class="muted" id="fire-summary">Waiting for events…</div>
+                  <div style="display:flex; gap:10px; flex-wrap:wrap">
+                    <button class="btn" id="fire-autoscroll" type="button">Auto-scroll: on</button>
+                    <button class="btn" id="fire-clear" type="button">Clear</button>
+                  </div>
+                </div>
+                <div class="logview" id="fire-log"></div>
               </div>
             </div>
           </section>
@@ -1048,15 +1098,44 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
         const fireStop = document.getElementById('fire-stop');
         const fireTool = document.getElementById('fire-tool');
         const fireIterations = document.getElementById('fire-iterations');
+        const fireSummary = document.getElementById('fire-summary');
+        const fireLog = document.getElementById('fire-log');
+        const fireAutoScrollBtn = document.getElementById('fire-autoscroll');
+        const fireClearBtn = document.getElementById('fire-clear');
         let fireRunId = '';
         let fireES = null;
         let fireState = null;
         let fireRenderPending = false;
+        let fireFlushTimer = null;
+        let firePending = [];
+        let fireAutoScroll = true;
+        let fireSpacer = null;
+        let fireItems = null;
+        const fireMaxEvents = 5000;
+        const fireRowHeight = 18;
+        const fireOverscan = 14;
 
         function setFireOutput(text) {
-          const out = document.getElementById('fire-last');
-          if (!out) return;
-          out.textContent = String(text || '');
+          if (!fireSummary) return;
+          fireSummary.textContent = String(text || '');
+        }
+
+        function ensureFireLogDOM() {
+          if (!fireLog) return false;
+          if (fireSpacer && fireItems) return true;
+          fireSpacer = document.createElement('div');
+          fireSpacer.style.height = '0px';
+          fireLog.appendChild(fireSpacer);
+
+          fireItems = document.createElement('div');
+          fireItems.className = 'logitems';
+          fireLog.appendChild(fireItems);
+          return true;
+        }
+
+        function setAutoScrollLabel() {
+          if (!fireAutoScrollBtn) return;
+          fireAutoScrollBtn.textContent = 'Auto-scroll: ' + (fireAutoScroll ? 'on' : 'off');
         }
 
         function resetFireState(runId) {
@@ -1067,8 +1146,10 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
             currentIteration: 0,
             phase: '',
             completeDetected: false,
-            iterations: {},
-            global: [],
+            rows: [],
+            eventCount: 0,
+            seenSeq: Object.create(null),
+            lastIterationForRows: null,
             finished: null,
           };
         }
@@ -1084,21 +1165,70 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
           return Number.isFinite(n) ? n : 0;
         }
 
-        function iterationBucket(iteration) {
-          const st = ensureFireState(fireRunId);
-          const n = parseIntSafe(iteration);
-          const key = String(n);
-          if (!st.iterations[key]) st.iterations[key] = { lines: [], phase: '' };
-          return st.iterations[key];
+        function truncateText(s, n) {
+          const str = String(s || '');
+          if (str.length <= n) return str;
+          return str.slice(0, Math.max(0, n - 1)) + '…';
         }
 
-        function pushBucketLine(iteration, line) {
-          const bucket = iterationBucket(iteration);
-          bucket.lines.push(String(line || ''));
-          const maxLinesPerIteration = 400;
-          if (bucket.lines.length > maxLinesPerIteration) {
-            bucket.lines = bucket.lines.slice(bucket.lines.length - maxLinesPerIteration);
+        function sanitizeOneLine(s) {
+          return String(s || '').replace(/\r/g, '\\r').replace(/\n/g, '\\n');
+        }
+
+        function appendFireRowHeader(st, iteration) {
+          const iter = parseIntSafe(iteration);
+          if (st.lastIterationForRows === null || st.lastIterationForRows !== iter) {
+            st.rows.push({ kind: 'header', iteration: iter, text: '--- Iteration ' + iter + ' ---' });
+            st.lastIterationForRows = iter;
           }
+        }
+
+        function rebuildFireSeenSeq(st) {
+          st.seenSeq = Object.create(null);
+          st.eventCount = 0;
+          st.lastIterationForRows = null;
+          for (let i = 0; i < (st.rows || []).length; i++) {
+            const r = st.rows[i];
+            if (!r) continue;
+            if (r.kind === 'header') st.lastIterationForRows = parseIntSafe(r.iteration);
+            if (r.kind === 'event') {
+              st.eventCount++;
+              if (r.seq) st.seenSeq[String(r.seq)] = true;
+            }
+          }
+        }
+
+        function trimFireRows(st) {
+          if (!st || !st.rows) return;
+          if (st.eventCount <= fireMaxEvents) return;
+          while (st.rows.length && st.eventCount > fireMaxEvents) {
+            const r = st.rows.shift();
+            if (r && r.kind === 'event') st.eventCount--;
+          }
+          rebuildFireSeenSeq(st);
+        }
+
+        function appendFireEventRow(st, ev, iteration, text, level) {
+          const seq = (ev && ev.seq !== undefined) ? parseIntSafe(ev.seq) : 0;
+          if (seq && st.seenSeq[String(seq)]) return;
+          if (seq) st.seenSeq[String(seq)] = true;
+
+          const iter = parseIntSafe(iteration);
+          appendFireRowHeader(st, iter);
+
+          const type = ev && ev.type ? String(ev.type) : '';
+          const step = ev && ev.step ? String(ev.step) : '';
+          const prefix = (seq ? ('#' + seq + ' ') : '') + (type ? (type + ' ') : '') + (step ? ('[' + step + '] ') : '') + 'i=' + iter + ' ';
+          const line = prefix + truncateText(sanitizeOneLine(text), 900);
+          st.rows.push({ kind: 'event', iteration: iter, seq: seq, level: level || '', text: line });
+          st.eventCount++;
+          trimFireRows(st);
+        }
+
+        function isNearBottom(el, thresholdPx) {
+          const threshold = thresholdPx || 24;
+          const remaining = (el.scrollHeight - el.clientHeight) - el.scrollTop;
+          return remaining <= threshold;
         }
 
         function scheduleFireRender() {
@@ -1112,30 +1242,44 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
 
         function renderFireLog() {
           const st = ensureFireState(fireRunId);
-          const parts = [];
-          parts.push('Run: ' + (st.runId || '(none)'));
           const tool = st.tool ? (' tool=' + st.tool) : '';
           const maxI = st.maxIterations ? (' maxIterations=' + st.maxIterations) : '';
           const phase = st.phase ? (' phase=' + st.phase) : '';
           const complete = st.completeDetected ? ' completeDetected=true' : '';
-          parts.push('Status:' + tool + maxI + ' iteration=' + (st.currentIteration || 0) + phase + complete);
+          setFireOutput('Run: ' + (st.runId || '(none)') + ' | Status:' + tool + maxI + ' iteration=' + (st.currentIteration || 0) + phase + complete);
 
-          const keys = Object.keys(st.iterations || {}).map(k => parseIntSafe(k)).sort((a, b) => a - b);
-          keys.forEach((k) => {
-            const bucket = st.iterations[String(k)];
-            if (!bucket) return;
-            parts.push('');
-            parts.push('--- Iteration ' + k + (bucket.phase ? (' (' + bucket.phase + ')') : '') + ' ---');
-            (bucket.lines || []).forEach(line => parts.push(line));
-          });
+          if (!ensureFireLogDOM()) return;
 
-          if (st.finished) {
-            parts.push('');
-            parts.push('--- Finished ---');
-            parts.push(JSON.stringify(st.finished, null, 2));
+          const rows = st.rows || [];
+          const total = rows.length;
+          fireSpacer.style.height = String(total * fireRowHeight) + 'px';
+
+          const scrollTop = fireLog.scrollTop || 0;
+          const viewport = fireLog.clientHeight || 0;
+          let start = Math.floor(scrollTop / fireRowHeight) - fireOverscan;
+          if (start < 0) start = 0;
+          let end = Math.ceil((scrollTop + viewport) / fireRowHeight) + fireOverscan;
+          if (end > total) end = total;
+
+          const frag = document.createDocumentFragment();
+          for (let i = start; i < end; i++) {
+            const r = rows[i];
+            if (!r) continue;
+            const row = document.createElement('div');
+            const lvl = r.level ? String(r.level) : '';
+            const isHeader = r.kind === 'header';
+            row.className = 'logrow' + (isHeader ? ' header' : '') + (lvl === 'error' ? ' bad' : (lvl === 'warn' ? ' warn' : (lvl === 'info' ? '' : '')));
+            row.textContent = isHeader ? String(r.text || '') : String(r.text || '');
+            frag.appendChild(row);
           }
+          fireItems.style.transform = 'translateY(' + String(start * fireRowHeight) + 'px)';
+          fireItems.textContent = '';
+          fireItems.appendChild(frag);
 
-          setFireOutput(parts.join('\n'));
+          if (fireAutoScroll) {
+            const target = Math.max(0, (total * fireRowHeight) - (fireLog.clientHeight || 0));
+            fireLog.scrollTop = target;
+          }
         }
 
         function handleFireEvent(ev) {
@@ -1151,14 +1295,18 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
             if (data.tool) st.tool = String(data.tool);
             if (data.maxIterations) st.maxIterations = parseIntSafe(data.maxIterations);
             st.phase = 'run_started';
-            scheduleFireRender();
+            appendFireEventRow(st, ev, st.currentIteration || 0, 'run_started', ev.level || '');
             return;
           }
 
           if (type === 'run_finished') {
             st.phase = 'run_finished';
             st.finished = ev;
-            scheduleFireRender();
+            const reason = data && data.reason ? String(data.reason) : '';
+            const exitCode = (data && data.exitCode !== undefined) ? String(data.exitCode) : '';
+            const signal = (data && data.signal !== undefined) ? String(data.signal) : '';
+            const msg = 'run_finished' + (reason ? (' reason=' + reason) : '') + (exitCode ? (' exitCode=' + exitCode) : '') + (signal ? (' signal=' + signal) : '');
+            appendFireEventRow(st, ev, st.currentIteration || 0, msg, ev.level || '');
             return;
           }
 
@@ -1172,21 +1320,38 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
             const iter = st.currentIteration || 0;
             const note = data.note ? String(data.note) : '';
             const phaseText = data.phase ? String(data.phase) : '';
-            const line = '[progress] phase=' + phaseText + (note ? (' note=' + note) : '');
-            pushBucketLine(iter, line);
-            iterationBucket(iter).phase = phaseText || iterationBucket(iter).phase;
-            scheduleFireRender();
+            const line = 'progress phase=' + phaseText + (note ? (' note=' + note) : '') + (st.completeDetected ? ' completeDetected=true' : '');
+            appendFireEventRow(st, ev, iter, line, ev.level || '');
             return;
           }
 
           if (type === 'process_stdout' || type === 'process_stderr') {
             const iter = (data.iteration !== undefined) ? parseIntSafe(data.iteration) : (st.currentIteration || 0);
             const txt = data.text ? String(data.text) : '';
-            const prefix = (type === 'process_stderr') ? '[err] ' : '[out] ';
-            if (txt) pushBucketLine(iter, prefix + txt);
-            scheduleFireRender();
+            const prefix = (type === 'process_stderr') ? 'stderr ' : 'stdout ';
+            if (txt) appendFireEventRow(st, ev, iter, prefix + txt, ev.level || '');
             return;
           }
+
+          // Default: keep other event types visible but compact.
+          try {
+            const msg = type ? type : 'event';
+            const payload = (ev.data !== undefined) ? JSON.stringify(ev.data) : '';
+            appendFireEventRow(st, ev, st.currentIteration || 0, msg + (payload ? (' data=' + payload) : ''), ev.level || '');
+          } catch (_) {}
+        }
+
+        function queueFireEvent(ev) {
+          firePending.push(ev);
+          if (fireFlushTimer) return;
+          fireFlushTimer = setTimeout(() => {
+            fireFlushTimer = null;
+            const batch = firePending;
+            firePending = [];
+            if (!batch.length) return;
+            for (let i = 0; i < batch.length; i++) handleFireEvent(batch[i]);
+            scheduleFireRender();
+          }, 80);
         }
 
         function closeFireStream() {
@@ -1205,7 +1370,7 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
               if (!raw) return;
               try {
                 const ev = JSON.parse(raw);
-                handleFireEvent(ev);
+                queueFireEvent(ev);
               } catch (_) {
                 setFireOutput(raw);
               }
@@ -1240,6 +1405,7 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
                 return;
               }
               resetFireState(fireRunId);
+              if (fireLog) fireLog.scrollTop = 0;
               setFireOutput('Started runId=' + fireRunId + '. Connecting stream…');
               connectFireStream(fireRunId);
             } catch (e) {
@@ -1265,6 +1431,38 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
           });
         }
 
+        if (fireAutoScrollBtn) {
+          fireAutoScrollBtn.addEventListener('click', () => {
+            fireAutoScroll = !fireAutoScroll;
+            setAutoScrollLabel();
+            scheduleFireRender();
+          });
+          setAutoScrollLabel();
+        }
+
+        if (fireClearBtn) {
+          fireClearBtn.addEventListener('click', () => {
+            resetFireState(fireRunId || '');
+            setFireOutput('Cleared.');
+            scheduleFireRender();
+          });
+        }
+
+        if (fireLog) {
+          fireLog.addEventListener('scroll', () => {
+            if (!fireAutoScroll) {
+              scheduleFireRender();
+              return;
+            }
+            // If user scrolls up, auto-scroll would fight them. Flip it off.
+            if (!isNearBottom(fireLog, 48)) {
+              fireAutoScroll = false;
+              setAutoScrollLabel();
+            }
+            scheduleFireRender();
+          });
+        }
+
         // Best-effort SSE connection for live status. Runs without requiring a runId.
         try {
           const es = new EventSource('/api/stream');
@@ -1273,15 +1471,15 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
           es.onerror = () => setStreamBadge('bad', 'Stream: disconnected');
           es.onmessage = (e) => {
             if (fireRunId) return;
-            const target = document.getElementById('fire-last');
-            if (!target) return;
             const raw = (e && e.data) ? e.data : '';
             if (!raw) return;
             try {
               const ev = JSON.parse(raw);
-              target.textContent = JSON.stringify(ev, null, 2);
+              resetFireState('');
+              appendFireEventRow(ensureFireState(''), ev, 0, JSON.stringify(ev), ev.level || '');
+              scheduleFireRender();
             } catch (_) {
-              target.textContent = raw;
+              setFireOutput(raw);
             }
           };
         } catch (_) {
