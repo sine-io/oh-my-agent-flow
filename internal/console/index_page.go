@@ -553,7 +553,7 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
                   <label for="convert-path">PRD markdown</label>
                   <input id="convert-path" placeholder="tasks/prd-your-feature.md" autocomplete="off" />
                 </div>
-                <button class="btn primary" type="button" disabled>Convert (coming soon)</button>
+                <button class="btn primary" id="convert-run" type="button">Convert</button>
               </div>
               <div class="panel">
                 <h2>Result</h2>
@@ -681,8 +681,9 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
           try { data = text ? JSON.parse(text) : null; } catch (_) {}
           if (!resp.ok) {
             const msg = data && data.message ? data.message : ('HTTP ' + resp.status);
+            const where = (data && data.file && data.location && data.location.line) ? ('\\nAt: ' + data.file + ':' + data.location.line + ':' + (data.location.column || 1)) : '';
             const hint = data && data.hint ? ('\\nHint: ' + data.hint) : '';
-            throw new Error(msg + hint);
+            throw new Error(msg + where + hint);
           }
           return data;
         }
@@ -705,6 +706,26 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
           try {
             const data = await fetchJSON('/api/fs/read?path=' + encodeURIComponent(path));
             out.textContent = data && typeof data.content === 'string' ? data.content : '(no content)';
+          } catch (e) {
+            out.textContent = String(e && e.message ? e.message : e);
+          }
+        });
+
+        document.getElementById('convert-run').addEventListener('click', async () => {
+          const path = (document.getElementById('convert-path').value || '').trim();
+          const out = document.getElementById('convert-result');
+          out.textContent = 'Converting…';
+          try {
+            const data = await fetchJSON('/api/convert', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ prdPath: path })
+            });
+            if (data && typeof data.json === 'string') {
+              out.textContent = data.json;
+            } else {
+              out.textContent = JSON.stringify(data, null, 2);
+            }
           } catch (e) {
             out.textContent = String(e && e.message ? e.message : e);
           }

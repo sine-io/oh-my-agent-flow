@@ -8,6 +8,7 @@
 - Keep the UI HTML in `internal/console` via `console.RenderIndexHTML(...)` (uses `html/template`) so `cmd/ohmyagentflow/main.go` stays focused on wiring.
 - `internal/console/index_page.go` is a Go raw string template: don’t include backticks in the HTML/JS text or the Go file won’t compile.
 - When calling LLM CLIs (`codex`/`claude`) from Go, require stable output markers (e.g., `BEGIN_COMMANDS`/`END_COMMANDS`) and extract the last marker pair to avoid parsing echoed prompts; sanitize/redact provider output before returning it in API errors.
+- For parse/convert endpoints, return `APIError` with `file` + `location:{line,column}` so the UI can show precise fix locations.
 - For filesystem reads, use `console.NewFSReader(...)` + `FSReadHandler(...)` so paths are forced under project root, symlink escapes are blocked, reads are whitelisted, and file size is capped.
 - For questionnaire PRD generation, use `POST /api/prd/generate?preview=1` for live previews (no write) and `POST /api/prd/generate` to atomically write `tasks/prd-<feature_slug>.md`.
 - For SSE logs, use `console.NewStreamHub(...)` + `console.StreamHandler(...)`; publish events via `hub.Publish(StreamEvent{...})` and clients can reconnect with `sinceSeq` for replay.
@@ -141,4 +142,16 @@ Started: Thu Feb  5 19:53:13 CST 2026
 - **Learnings for future iterations:**
   - Wrap model responses in stable markers and extract the last marker pair to avoid accidentally parsing echoed prompts from CLI tools.
   - Avoid leaking secrets by redacting common key patterns (`sk-*`, `api_key`, `authorization`) in any provider output returned via JSON errors.
+---
+
+## 2026-02-06 19:06:29 CST - US-014
+- Implemented `POST /api/convert` to read a whitelisted PRD markdown file (`tasks/prd-*.md`), validate it, and deterministically generate root `prd.json`.
+- Added strict validations for YAML front matter, required sections, sequential `US-###` headers, `**Description:**` lines, and checkbox acceptance criteria items.
+- Convert failures now return structured JSON errors with `code`, `file`, and `location:{line,column}` for precise fixes.
+- On success, writes `prd.json` atomically and creates a timestamped `prd.json.bak-<timestamp>.json` when overwriting an existing `prd.json`.
+- Wired the Convert UI button to call `/api/convert` and render the resulting JSON or error details.
+- Files changed: `cmd/ohmyagentflow/main.go`, `internal/console/convert.go`, `internal/console/api_error.go`, `internal/console/convert_test.go`, `internal/console/index_page.go`, `AGENTS.md`, `prd.json`, `progress.txt`
+- **Learnings for future iterations:**
+  - Reuse `FSReader.ReadWhitelistedText(...)` for any endpoint that accepts a user-supplied path; it centralizes root containment + symlink escape protection + whitelist enforcement.
+  - Prefer returning parse errors in the shared `APIError` shape (with `file` + `location`) so the UI can show actionable messages without special-casing each endpoint.
 ---
