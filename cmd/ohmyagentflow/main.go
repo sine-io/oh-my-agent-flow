@@ -13,7 +13,7 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/snarktank/oh-my-agent-flow/internal/console"
+	"github.com/sine-io/oh-my-agent-flow/internal/console"
 )
 
 func main() {
