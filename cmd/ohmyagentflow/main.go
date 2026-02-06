@@ -106,6 +106,7 @@ func main() {
 	mux.HandleFunc("POST /api/prd/chat/finalize", prdChat.FinalizeHandler())
 	mux.HandleFunc("POST /api/convert", console.ConvertHandler(console.ConvertConfig{ProjectRoot: projectRoot, FSReader: fsReader}))
 	mux.HandleFunc("POST /api/fire", fireSvc.StartHandler())
+	mux.HandleFunc("POST /api/fire/stop", fireSvc.StopHandler())
 
 	mux.HandleFunc("POST /api/ping", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")

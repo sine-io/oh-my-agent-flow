@@ -3,11 +3,15 @@ package console
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -170,5 +174,131 @@ func TestFireService_StartHandler_RejectsConcurrentRun(t *testing.T) {
 	_ = json.Unmarshal(w2.Body.Bytes(), &apiErr)
 	if apiErr.Code != "RESOURCE_CONFLICT" {
 		t.Fatalf("expected RESOURCE_CONFLICT, got %+v", apiErr)
+	}
+}
+
+func TestFireService_StopHandler_StopsProcessTree(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process-group stop test is Unix-only")
+	}
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "prd.json"), []byte(`{}`+"\n"), 0644); err != nil {
+		t.Fatalf("write prd.json: %v", err)
+	}
+
+	script := "#!/usr/bin/env bash\n" +
+		"set -euo pipefail\n" +
+		"trap 'exit 0' INT\n" +
+		"bash -c 'trap \"exit 0\" INT; while true; do sleep 1; done' &\n" +
+		"child=$!\n" +
+		"echo \"CHILD_PID=$child\"\n" +
+		"while true; do sleep 1; done\n"
+	if err := os.WriteFile(filepath.Join(root, "ralph-codex.sh"), []byte(script), 0755); err != nil {
+		t.Fatalf("write ralph-codex.sh: %v", err)
+	}
+
+	hub := NewStreamHub(StreamHubConfig{MaxEventsPerRun: 200, SubscriberBufSize: 32})
+	svc, err := NewFireService(FireConfig{ProjectRoot: root, Hub: hub})
+	if err != nil {
+		t.Fatalf("NewFireService: %v", err)
+	}
+
+	body, _ := json.Marshal(FireStartRequest{Tool: "codex", MaxIterations: 1})
+	req := httptest.NewRequest(http.MethodPost, "/api/fire", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	svc.StartHandler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var startResp FireStartResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &startResp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	var childPID int
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		hub.mu.Lock()
+		state := hub.runs[startResp.RunID]
+		if state != nil {
+			for _, ev := range state.events {
+				if ev.Type != "process_stdout" {
+					continue
+				}
+				data, _ := ev.Data.(map[string]any)
+				text, _ := data["text"].(string)
+				if strings.HasPrefix(text, "CHILD_PID=") {
+					n, err := strconv.Atoi(strings.TrimPrefix(text, "CHILD_PID="))
+					if err == nil && n > 0 {
+						childPID = n
+						break
+					}
+				}
+			}
+		}
+		hub.mu.Unlock()
+
+		if childPID != 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for child pid in logs")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	stopReq := httptest.NewRequest(http.MethodPost, "/api/fire/stop", nil)
+	stopW := httptest.NewRecorder()
+	svc.StopHandler().ServeHTTP(stopW, stopReq)
+	if stopW.Code != http.StatusOK {
+		t.Fatalf("expected stop 200, got %d: %s", stopW.Code, stopW.Body.String())
+	}
+
+	deadline = time.Now().Add(4 * time.Second)
+	var finished StreamEvent
+	var haveFinished bool
+	for {
+		hub.mu.Lock()
+		state := hub.runs[startResp.RunID]
+		if state != nil {
+			for _, ev := range state.events {
+				if ev.Type != "run_finished" {
+					continue
+				}
+				finished = ev
+				haveFinished = true
+			}
+		}
+		hub.mu.Unlock()
+
+		if haveFinished {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for run_finished")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	finishedData, _ := finished.Data.(map[string]any)
+	if got, _ := finishedData["reason"].(string); got != "stopped" {
+		t.Fatalf("expected reason=stopped, got %v", finishedData["reason"])
+	}
+	if got, _ := finishedData["signal"].(string); got != "SIGINT" && got != "SIGKILL" {
+		t.Fatalf("expected signal SIGINT/SIGKILL, got %v", finishedData["signal"])
+	}
+
+	// Ensure the background child is gone too.
+	deadline = time.Now().Add(1 * time.Second)
+	for {
+		err = syscall.Kill(childPID, 0)
+		if errors.Is(err, syscall.ESRCH) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected child pid %d to be gone, got err=%v", childPID, err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

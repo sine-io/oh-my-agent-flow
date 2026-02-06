@@ -17,6 +17,7 @@
 - `StreamHub` enforces governance for noisy process output: truncates `process_stdout/stderr` `data.text` (default 8KB) and emits a one-time `progress` warning per run (config via `StreamHubConfig.MaxProcessTextBytes`).
 - Use `POST /api/init` (Go filesystem ops, no shell) to install repo-local Codex skills by copying `skills/<skill>/SKILL-codex.md` into `.codex/skills/<skill>/SKILL.md`.
 - For Fire runs, use `POST /api/fire` + `console.NewFireService(...)` to execute only `bash <abs>/ralph-codex.sh --tool <codex|claude> <maxIterations>`, stream stdout/stderr via `StreamHub`, and reject concurrent runs with `RESOURCE_CONFLICT`.
+- For Fire Stop, don’t assume “parent exited” means the run is stopped; wait for the process group to be empty (e.g. `kill(-pgid, 0)` returns ESRCH) before returning success.
 
 Started: Thu Feb  5 19:53:13 CST 2026
 ---
@@ -166,4 +167,15 @@ Started: Thu Feb  5 19:53:13 CST 2026
   - For safe local execution, validate any “allowed script” is a regular file and reject symlinks before calling `bash` (prevents path redirection outside project root).
   - When the UI opens a run-scoped EventSource, suppress global `/api/stream` updates to the same element to avoid racing renders.
   - Browser verification can be done safely by running the console from a temp project root with a dummy `ralph-codex.sh` to exercise streaming without invoking real agent loops.
+---
+
+## 2026-02-06 19:36:28 CST - US-016
+- Added `POST /api/fire/stop` to stop the active Fire run idempotently and prevent orphan processes.
+- Fire now starts in a new process group, Stop sends `SIGINT` to the group, waits up to 5 seconds for the group to be empty, then escalates to `SIGKILL` when needed.
+- `run_finished` now reports `reason=stopped` plus `signal`/`exitCode` fields per the design doc.
+- Added a simple Fire “Stop” button in the console UI.
+- Files changed: `cmd/ohmyagentflow/main.go`, `internal/console/fire.go`, `internal/console/procgroup_unix.go`, `internal/console/procgroup_windows.go`, `internal/console/exitstatus_unix.go`, `internal/console/exitstatus_windows.go`, `internal/console/fire_test.go`, `internal/console/index_page.go`, `AGENTS.md`, `prd.json`, `progress.txt`
+- **Learnings for future iterations:**
+  - Don’t treat “main process exited” as “Fire stopped”: wait for the process group to be empty, otherwise background children can outlive the parent.
+  - Prefer OS-specific helpers with build tags for process-group and signal handling to keep Windows builds compiling cleanly.
 ---

@@ -579,7 +579,10 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
                   <label for="fire-iterations">Max iterations</label>
                   <input id="fire-iterations" type="number" min="1" max="200" value="10" />
                 </div>
-                <button class="btn primary" id="fire-start" type="button">Start Fire</button>
+                <div style="display:flex; gap:10px; flex-wrap:wrap">
+                  <button class="btn primary" id="fire-start" type="button">Start Fire</button>
+                  <button class="btn danger" id="fire-stop" type="button">Stop</button>
+                </div>
               </div>
               <div class="panel">
                 <h2>Last stream message</h2>
@@ -1042,6 +1045,7 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
 
         // Fire (run Ralph via bash and stream logs)
         const fireStart = document.getElementById('fire-start');
+        const fireStop = document.getElementById('fire-stop');
         const fireTool = document.getElementById('fire-tool');
         const fireIterations = document.getElementById('fire-iterations');
         let fireRunId = '';
@@ -1098,6 +1102,23 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
               }
               setFireOutput('Started runId=' + fireRunId + '. Connecting stream…');
               connectFireStream(fireRunId);
+            } catch (e) {
+              setFireOutput(String(e && e.message ? e.message : e));
+            }
+          });
+        }
+
+        if (fireStop) {
+          fireStop.addEventListener('click', async () => {
+            if (!fireRunId) {
+              setFireOutput('No active runId. Start Fire first.');
+              return;
+            }
+            setFireOutput('Stopping runId=' + fireRunId + '…');
+            try {
+              const data = await fetchJSON('/api/fire/stop', { method: 'POST' });
+              const stopping = !!(data && data.stopping);
+              setFireOutput(stopping ? ('Stop requested for runId=' + fireRunId + '.') : ('Stopped runId=' + fireRunId + '.'));
             } catch (e) {
               setFireOutput(String(e && e.message ? e.message : e));
             }

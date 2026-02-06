@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -45,6 +46,14 @@ type fireRunState struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	cmd    *exec.Cmd
+
+	done chan struct{}
+
+	pgid int
+
+	stopping     bool
+	stopSignal   string
+	stopIssuedAt time.Time
 }
 
 type FireStartRequest struct {
@@ -55,6 +64,12 @@ type FireStartRequest struct {
 type FireStartResponse struct {
 	OK    bool   `json:"ok"`
 	RunID string `json:"runId"`
+}
+
+type FireStopResponse struct {
+	OK       bool   `json:"ok"`
+	RunID    string `json:"runId,omitempty"`
+	Stopping bool   `json:"stopping"`
 }
 
 func NewFireService(cfg FireConfig) (*FireService, error) {
@@ -135,11 +150,13 @@ func (s *FireService) StartHandler() http.HandlerFunc {
 			maxIterations: req.MaxIterations,
 			ctx:           ctx,
 			cancel:        cancel,
+			done:          make(chan struct{}),
 		}
 		s.mu.Unlock()
 
-		cmd := exec.CommandContext(ctx, "bash", scriptAbs, "--tool", string(tool), strconv.Itoa(req.MaxIterations))
+		cmd := exec.Command("bash", scriptAbs, "--tool", string(tool), strconv.Itoa(req.MaxIterations))
 		cmd.Dir = s.rootAbs
+		setProcessGroup(cmd)
 
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
@@ -179,6 +196,9 @@ func (s *FireService) StartHandler() http.HandlerFunc {
 		s.mu.Lock()
 		if s.active != nil && s.active.runID == runID {
 			s.active.cmd = cmd
+			if runtime.GOOS != "windows" {
+				s.active.pgid = cmd.Process.Pid
+			}
 		}
 		s.mu.Unlock()
 
@@ -188,6 +208,8 @@ func (s *FireService) StartHandler() http.HandlerFunc {
 			Step:  "fire",
 			Level: "info",
 			Data: map[string]any{
+				"op":            "fire",
+				"cwd":           s.rootAbs,
 				"tool":          tool,
 				"maxIterations": req.MaxIterations,
 				"pid":           cmd.Process.Pid,
@@ -204,26 +226,158 @@ func (s *FireService) StartHandler() http.HandlerFunc {
 	}
 }
 
+func (s *FireService) StopHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		active := s.active
+		if active == nil || active.cmd == nil || active.cmd.Process == nil {
+			s.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			_ = json.NewEncoder(w).Encode(FireStopResponse{OK: true, Stopping: false})
+			return
+		}
+		runID := active.runID
+		if active.stopping {
+			s.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			_ = json.NewEncoder(w).Encode(FireStopResponse{OK: true, RunID: runID, Stopping: true})
+			return
+		}
+		active.stopping = true
+		active.stopSignal = "SIGINT"
+		active.stopIssuedAt = time.Now()
+		pgid := active.pgid
+		pid := active.cmd.Process.Pid
+		s.mu.Unlock()
+
+		if pgid == 0 {
+			pgid = pid
+		}
+
+		// Best effort: stop via process group (Unix) or the process itself (Windows).
+		_ = sendInterruptToProcessGroup(pgid, pid)
+
+		s.hub.Publish(StreamEvent{
+			RunID: runID,
+			Type:  "progress",
+			Step:  "fire",
+			Level: "info",
+			Data: map[string]any{
+				"phase": "stopped",
+				"note":  "Stop requested; sending SIGINT.",
+			},
+		})
+
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if !processGroupExists(pgid) {
+				w.Header().Set("Content-Type", "application/json; charset=utf-8")
+				_ = json.NewEncoder(w).Encode(FireStopResponse{OK: true, RunID: runID, Stopping: false})
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+
+		s.mu.Lock()
+		active = s.active
+		if active != nil && active.runID == runID {
+			active.stopSignal = "SIGKILL"
+		}
+		s.mu.Unlock()
+
+		_ = sendKillToProcessGroup(pgid, pid)
+
+		s.hub.Publish(StreamEvent{
+			RunID: runID,
+			Type:  "progress",
+			Step:  "fire",
+			Level: "warn",
+			Data: map[string]any{
+				"phase": "stopped",
+				"note":  "Process did not exit after SIGINT; sent SIGKILL.",
+			},
+		})
+
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(FireStopResponse{OK: true, RunID: runID, Stopping: true})
+	}
+}
+
 func (s *FireService) waitAndFinalize(runID string, cmd *exec.Cmd) {
 	startedAt := time.Now()
 	err := cmd.Wait()
 
-	exitCode := 0
+	var exitCodePtr *int
+	var signalPtr *string
 	level := "info"
 	ok := true
-	var reason string
+	reason := "completed"
+
+	if runtime.GOOS != "windows" {
+		if exitCode, sig, okParse := parseUnixExitStatus(err); okParse {
+			if sig != "" {
+				signalPtr = &sig
+				exitCodePtr = nil
+			} else {
+				exitCodePtr = &exitCode
+			}
+		}
+	}
+
+	if exitCodePtr == nil && signalPtr == nil {
+		exitCode := 0
+		if err != nil {
+			var ee *exec.ExitError
+			if errors.As(err, &ee) {
+				exitCode = ee.ExitCode()
+			} else {
+				exitCode = -1
+			}
+		}
+		exitCodePtr = &exitCode
+	}
+
 	if err != nil {
 		ok = false
 		level = "error"
-		reason = err.Error()
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			exitCode = ee.ExitCode()
-		} else {
-			exitCode = -1
-		}
+		reason = "error"
 	} else {
-		exitCode = 0
+		ok = true
+		level = "info"
+		reason = "completed"
+	}
+
+	s.mu.Lock()
+	active := s.active
+	stopSignal := ""
+	stopRequested := false
+	if active != nil && active.runID == runID && active.stopping {
+		stopRequested = true
+		stopSignal = active.stopSignal
+	}
+	done := (active != nil && active.runID == runID && active.done != nil)
+	if done {
+		close(active.done)
+	}
+	s.mu.Unlock()
+
+	if stopRequested {
+		reason = "stopped"
+		ok = false
+		level = "info"
+		if stopSignal != "" {
+			signalPtr = &stopSignal
+			exitCodePtr = nil
+		}
+	}
+
+	exitCodeVal := any(nil)
+	if exitCodePtr != nil {
+		exitCodeVal = *exitCodePtr
+	}
+	signalVal := any(nil)
+	if signalPtr != nil {
+		signalVal = *signalPtr
 	}
 
 	s.hub.Publish(StreamEvent{
@@ -232,12 +386,14 @@ func (s *FireService) waitAndFinalize(runID string, cmd *exec.Cmd) {
 		Step:  "fire",
 		Level: level,
 		Data: map[string]any{
-			"ok":       ok,
-			"exitCode": exitCode,
-			"reason":   reason,
+			"op":     "fire",
+			"ok":     ok,
+			"reason": reason,
 			"durationMs": func() int64 {
 				return time.Since(startedAt).Milliseconds()
 			}(),
+			"exitCode": exitCodeVal,
+			"signal":   signalVal,
 		},
 	})
 
@@ -250,6 +406,13 @@ func (s *FireService) clearActive(runID string) {
 	if s.active != nil && s.active.runID == runID {
 		if s.active.cancel != nil {
 			s.active.cancel()
+		}
+		if s.active.done != nil {
+			select {
+			case <-s.active.done:
+			default:
+				close(s.active.done)
+			}
 		}
 		s.active = nil
 	}
