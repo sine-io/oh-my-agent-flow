@@ -82,6 +82,16 @@ func TestPRDChat_SessionMessageFinalize(t *testing.T) {
 		if !strings.Contains(fin.Content, "# PRD: Task Status Feature") {
 			t.Fatalf("expected title header")
 		}
+		{
+			expectedReq := chatStateToGenerateRequest(fin.SlotState)
+			expected, apiErr, status := buildPRDMarkdown(expectedReq)
+			if apiErr != nil {
+				t.Fatalf("buildPRDMarkdown status=%d err=%s", status, apiErr.Message)
+			}
+			if expected != fin.Content {
+				t.Fatalf("expected finalize content to match questionnaire template output")
+			}
+		}
 		fileAbs := filepath.Join(root, filepath.FromSlash(fin.Path))
 		b, err := os.ReadFile(fileAbs)
 		if err != nil {
@@ -124,4 +134,3 @@ func TestPRDChat_SessionTTLExpires(t *testing.T) {
 		t.Fatalf("expected 404 after expiry, got %d body=%s", rr2.Code, rr2.Body.String())
 	}
 }
-

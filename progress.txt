@@ -6,6 +6,7 @@
 - Canonicalize the UI origin early: use `console.RedirectLocalhostTo127(...)` so browser requests land on `127.0.0.1` (helps strict Origin checks later).
 - Protect all `POST /api/*` routes using `console.RequireWriteAuth(...)` (Origin allowlist + `X-Session-Token`), and inject the token into the UI via `<meta name="ohmyagentflow-session-token" ...>`.
 - Keep the UI HTML in `internal/console` via `console.RenderIndexHTML(...)` (uses `html/template`) so `cmd/ohmyagentflow/main.go` stays focused on wiring.
+- `internal/console/index_page.go` is a Go raw string template: don’t include backticks in the HTML/JS text or the Go file won’t compile.
 - For filesystem reads, use `console.NewFSReader(...)` + `FSReadHandler(...)` so paths are forced under project root, symlink escapes are blocked, reads are whitelisted, and file size is capped.
 - For questionnaire PRD generation, use `POST /api/prd/generate?preview=1` for live previews (no write) and `POST /api/prd/generate` to atomically write `tasks/prd-<feature_slug>.md`.
 - For SSE logs, use `console.NewStreamHub(...)` + `console.StreamHandler(...)`; publish events via `hub.Publish(StreamEvent{...})` and clients can reconnect with `sinceSeq` for replay.
@@ -121,4 +122,13 @@ Started: Thu Feb  5 19:53:13 CST 2026
 - **Learnings for future iterations:**
   - Enforce the PRD template limits early (slug regex/lengths, single-line descriptions, item counts) so Convert can stay deterministic.
   - Live previews work well by reusing the same generator endpoint with `?preview=1` and keeping writes atomic for the “Save” path.
+---
+
+## 2026-02-06 18:44:38 CST - US-012
+- Added a PRD “Chat (beta)” mode UI that creates sessions, sends messages to update slot-state, and finalizes into `tasks/prd-<feature_slug>.md`.
+- Strengthened chat finalize validation by asserting its generated markdown matches questionnaire output (same template path and content).
+- Files changed: `internal/console/index_page.go`, `internal/console/prd_chat.go`, `internal/console/prd_chat_test.go`, `prd.json`, `progress.txt`
+- **Learnings for future iterations:**
+  - The console UI is embedded as a Go raw string; avoid backticks in the HTML/JS text (use plain text or entities) to prevent Go parse errors.
+  - Chat sessions are intentionally lightweight: message parsing supports `key: value` lines plus `/reset`, `/story`, and `/ac` commands to evolve slot-state deterministically.
 ---

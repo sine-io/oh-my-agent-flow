@@ -37,12 +37,12 @@ type prdChatSession struct {
 type PRDChatSlotState struct {
 	FrontMatter PRDGenerateFrontMatter `json:"frontMatter"`
 
-	Goals                  []string         `json:"goals"`
+	Goals                  []string           `json:"goals"`
 	UserStories            []PRDChatUserStory `json:"userStories"`
-	FunctionalRequirements []string         `json:"functionalRequirements"`
-	NonGoals               []string         `json:"nonGoals"`
-	SuccessMetrics         []string         `json:"successMetrics"`
-	OpenQuestions          []string         `json:"openQuestions"`
+	FunctionalRequirements []string           `json:"functionalRequirements"`
+	NonGoals               []string           `json:"nonGoals"`
+	SuccessMetrics         []string           `json:"successMetrics"`
+	OpenQuestions          []string           `json:"openQuestions"`
 
 	Missing  []string `json:"missing"`
 	Warnings []string `json:"warnings"`
@@ -55,10 +55,10 @@ type PRDChatUserStory struct {
 }
 
 type PRDChatSessionResponse struct {
-	SessionID string          `json:"sessionId"`
-	TTLSeconds int64          `json:"ttlSeconds"`
-	ExpiresAt string          `json:"expiresAt"`
-	SlotState PRDChatSlotState `json:"slotState"`
+	SessionID  string           `json:"sessionId"`
+	TTLSeconds int64            `json:"ttlSeconds"`
+	ExpiresAt  string           `json:"expiresAt"`
+	SlotState  PRDChatSlotState `json:"slotState"`
 }
 
 type PRDChatMessageRequest struct {
@@ -67,12 +67,12 @@ type PRDChatMessageRequest struct {
 }
 
 type PRDChatMessageResponse struct {
-	SessionID string          `json:"sessionId"`
+	SessionID string           `json:"sessionId"`
 	SlotState PRDChatSlotState `json:"slotState"`
 }
 
 type PRDChatStateResponse struct {
-	SessionID string          `json:"sessionId"`
+	SessionID string           `json:"sessionId"`
 	SlotState PRDChatSlotState `json:"slotState"`
 }
 
@@ -81,12 +81,12 @@ type PRDChatFinalizeRequest struct {
 }
 
 type PRDChatFinalizeResponse struct {
-	OK       bool            `json:"ok"`
-	Path     string          `json:"path,omitempty"`
-	Content  string          `json:"content,omitempty"`
-	Size     int64           `json:"size,omitempty"`
-	Missing  []string        `json:"missing,omitempty"`
-	Warnings []string        `json:"warnings,omitempty"`
+	OK        bool             `json:"ok"`
+	Path      string           `json:"path,omitempty"`
+	Content   string           `json:"content,omitempty"`
+	Size      int64            `json:"size,omitempty"`
+	Missing   []string         `json:"missing,omitempty"`
+	Warnings  []string         `json:"warnings,omitempty"`
 	SlotState PRDChatSlotState `json:"slotState"`
 }
 
@@ -430,7 +430,7 @@ func dedupeStrings(in []string) []string {
 
 func chatStateToGenerateRequest(state PRDChatSlotState) PRDGenerateRequest {
 	stories := make([]PRDGenerateUserStory, 0, len(state.UserStories))
-	for i, st := range state.UserStories {
+	for _, st := range state.UserStories {
 		title := strings.TrimSpace(st.Title)
 		desc := strings.TrimSpace(st.Description)
 		if title == "" && desc == "" && len(st.AcceptanceCriteria) == 0 {
@@ -448,10 +448,10 @@ func chatStateToGenerateRequest(state PRDChatSlotState) PRDGenerateRequest {
 	}
 
 	return PRDGenerateRequest{
-		Mode:        "questionnaire",
-		FrontMatter: state.FrontMatter,
-		Goals:       state.Goals,
-		UserStories: stories,
+		Mode:                   "questionnaire",
+		FrontMatter:            state.FrontMatter,
+		Goals:                  state.Goals,
+		UserStories:            stories,
 		FunctionalRequirements: state.FunctionalRequirements,
 		NonGoals:               state.NonGoals,
 		SuccessMetrics:         state.SuccessMetrics,
@@ -557,4 +557,3 @@ func splitKeyValue(line string) (key string, val string, ok bool) {
 	key = strings.ReplaceAll(key, "-", "_")
 	return key, val, true
 }
-

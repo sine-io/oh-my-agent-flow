@@ -58,6 +58,7 @@ npm run dev
 - For Codex, run `./ralph-codex.sh init --tool codex` once to install repo-local skills into `.codex/skills`
 - The console also supports `POST /api/init` to install repo-local Codex skills without shelling out (copies `skills/<skill>/SKILL-codex.md` to `.codex/skills/<skill>/SKILL.md`).
 - Keep `cmd/ohmyagentflow/main.go` minimal: render the console UI via `internal/console.RenderIndexHTML(...)` (uses `html/template`) and pass dynamic values via `IndexPageData`.
+- The console UI in `internal/console/index_page.go` is embedded as a Go raw string: avoid using backticks in the HTML/JS content or the Go file won’t compile.
 - For local-console write endpoints, guard `POST /api/*` with strict Origin allowlisting plus a per-run `X-Session-Token` (see `internal/console/RequireWriteAuth` and the `<meta name="ohmyagentflow-session-token">` convention).
 - For local-console filesystem access, route all user-supplied paths through `internal/console/FSReader` to enforce project-root containment, symlink-escape prevention, whitelisting, and max read size.
 - For PRD questionnaire mode, use `POST /api/prd/generate?preview=1` to render a Convert-compatible preview without writing; omit `preview` to save under `tasks/prd-<feature_slug>.md`.

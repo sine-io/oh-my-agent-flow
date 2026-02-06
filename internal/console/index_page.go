@@ -259,6 +259,29 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
       .kv .k { color: var(--muted); font-size: 12px; }
       .kv .v { font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .muted { color: var(--muted); }
+
+      .tabs {
+        display: inline-flex;
+        gap: 8px;
+        padding: 6px;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: rgba(0,0,0,0.10);
+      }
+      .tab {
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--text);
+        border-radius: 12px;
+        padding: 10px 12px;
+        cursor: pointer;
+        font-size: 13px;
+      }
+      .tab:hover { border-color: rgba(122,162,255,0.55); }
+      .tab[aria-current="page"] {
+        background: rgba(122,162,255,0.14);
+        border-color: rgba(122,162,255,0.65);
+      }
     </style>
     <script>
       (function () {
@@ -355,7 +378,20 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
 
           <section class="panel" data-panel="prd" style="display:none">
             <h2>PRD</h2>
-            <p>Generate a Convert-compatible PRD markdown file (questionnaire mode), with live preview and safe saving under <span class="muted">tasks/</span>.</p>
+            <p>Generate a Convert-compatible PRD markdown file via questionnaire or chat mode, with safe saving under <span class="muted">tasks/</span>.</p>
+            <div style="display:flex; align-items:center; justify-content:space-between; gap: 10px; flex-wrap: wrap;">
+              <div class="tabs" role="tablist" aria-label="PRD mode">
+                <button class="tab" id="prd-mode-questionnaire-btn" type="button" aria-current="page">Questionnaire</button>
+                <button class="tab" id="prd-mode-chat-btn" type="button">Chat (beta)</button>
+              </div>
+              <span class="badge" title="Chat mode uses sessions and slot-state; finalize writes the exact same markdown template.">
+                <span class="pill" aria-hidden="true"></span>
+                <span>Deterministic template</span>
+              </span>
+            </div>
+            <div style="height: 14px"></div>
+
+            <div id="prd-mode-questionnaire">
             <div class="grid2">
               <div class="panel">
                 <h2>Questionnaire</h2>
@@ -451,6 +487,52 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
                 <pre id="prd-result">No file loaded.</pre>
               </div>
             </div>
+            </div>
+
+            <div id="prd-mode-chat" style="display:none">
+              <div class="grid2">
+                <div class="panel">
+                  <h2>Chat PRD</h2>
+                  <p class="muted">Chat messages update a structured slot-state. When ready, Finalize validates required fields and writes the same template as questionnaire mode.</p>
+                  <div style="display:flex; gap: 10px; flex-wrap: wrap;">
+                    <button class="btn primary" id="prd-chat-new" type="button">New session</button>
+                    <button class="btn" id="prd-chat-refresh" type="button" disabled>Refresh state</button>
+                    <button class="btn primary" id="prd-chat-finalize" type="button" disabled>Finalize to tasks/</button>
+                  </div>
+                  <div class="kv">
+                    <div class="k">Session</div>
+                    <div class="v" id="prd-chat-session">(none)</div>
+                  </div>
+                  <div class="kv">
+                    <div class="k">Expires</div>
+                    <div class="v" id="prd-chat-expires">(n/a)</div>
+                  </div>
+                  <div class="field">
+                    <label for="prd-chat-message">Message</label>
+                    <textarea id="prd-chat-message" placeholder="feature_slug: task-status\ntitle: Task Status Feature\ndescription: Add ability to mark tasks with different statuses.\n/story As a user, I can set a status\nstory_desc: Users can set status to todo/in-progress/done.\n/ac Typecheck passes"></textarea>
+                  </div>
+                  <div style="display:flex; gap: 10px; flex-wrap: wrap;">
+                    <button class="btn" id="prd-chat-send" type="button" disabled>Send message</button>
+                    <button class="btn" id="prd-chat-reset" type="button" disabled>Reset slot-state</button>
+                  </div>
+                  <div class="kv">
+                    <div class="k">Endpoint</div>
+                    <div class="v">POST /api/prd/chat/*</div>
+                  </div>
+                  <div class="kv">
+                    <div class="k">Saved path</div>
+                    <div class="v" id="prd-chat-saved">(not saved)</div>
+                  </div>
+                </div>
+                <div class="panel">
+                  <h2>Slot state</h2>
+                  <pre id="prd-chat-slot">Create a session to begin…</pre>
+                  <div style="height: 10px"></div>
+                  <h2>Finalize result</h2>
+                  <pre id="prd-chat-result">Finalize writes tasks/prd-&lt;feature_slug&gt;.md when required fields are present.</pre>
+                </div>
+              </div>
+            </div>
           </section>
 
           <section class="panel" data-panel="convert" style="display:none">
@@ -539,6 +621,35 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
 
         window.addEventListener('hashchange', () => setActivePanel(currentStepFromHash()));
         setActivePanel(currentStepFromHash());
+
+        function setPRDMode(mode) {
+          const questionnaire = document.getElementById('prd-mode-questionnaire');
+          const chat = document.getElementById('prd-mode-chat');
+          const btnQ = document.getElementById('prd-mode-questionnaire-btn');
+          const btnC = document.getElementById('prd-mode-chat-btn');
+          if (!questionnaire || !chat || !btnQ || !btnC) return;
+
+          const next = (mode === 'chat') ? 'chat' : 'questionnaire';
+          questionnaire.style.display = (next === 'questionnaire') ? '' : 'none';
+          chat.style.display = (next === 'chat') ? '' : 'none';
+          if (next === 'questionnaire') {
+            btnQ.setAttribute('aria-current', 'page');
+            btnC.removeAttribute('aria-current');
+          } else {
+            btnC.setAttribute('aria-current', 'page');
+            btnQ.removeAttribute('aria-current');
+          }
+          try { window.localStorage.setItem('ohmyagentflow.prdMode', next); } catch (_) {}
+        }
+
+        document.getElementById('prd-mode-questionnaire-btn').addEventListener('click', () => setPRDMode('questionnaire'));
+        document.getElementById('prd-mode-chat-btn').addEventListener('click', () => setPRDMode('chat'));
+        try {
+          const savedMode = window.localStorage.getItem('ohmyagentflow.prdMode');
+          setPRDMode(savedMode || 'questionnaire');
+        } catch (_) {
+          setPRDMode('questionnaire');
+        }
 
         document.getElementById('copy-root').addEventListener('click', async () => {
           const el = document.getElementById('project-root');
@@ -766,6 +877,138 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
 
         // Kick off an initial best-effort preview to populate placeholders.
         schedulePreview();
+
+        // PRD chat mode (slot-state sessions)
+        const chatNew = document.getElementById('prd-chat-new');
+        const chatSend = document.getElementById('prd-chat-send');
+        const chatReset = document.getElementById('prd-chat-reset');
+        const chatRefresh = document.getElementById('prd-chat-refresh');
+        const chatFinalize = document.getElementById('prd-chat-finalize');
+        const chatMessage = document.getElementById('prd-chat-message');
+        const chatSlot = document.getElementById('prd-chat-slot');
+        const chatResult = document.getElementById('prd-chat-result');
+        const chatSessionLabel = document.getElementById('prd-chat-session');
+        const chatExpiresLabel = document.getElementById('prd-chat-expires');
+        const chatSavedLabel = document.getElementById('prd-chat-saved');
+
+        let chatSessionId = '';
+
+        function setChatEnabled(enabled) {
+          [chatSend, chatReset, chatRefresh, chatFinalize].forEach(btn => {
+            if (!btn) return;
+            btn.disabled = !enabled;
+          });
+        }
+
+        function renderSlotState(slotState) {
+          if (!chatSlot) return;
+          chatSlot.textContent = JSON.stringify(slotState || null, null, 2);
+        }
+
+        function setChatSession(sessionId, expiresAt) {
+          chatSessionId = sessionId || '';
+          if (chatSessionLabel) chatSessionLabel.textContent = chatSessionId ? chatSessionId : '(none)';
+          if (chatExpiresLabel) chatExpiresLabel.textContent = expiresAt ? expiresAt : '(n/a)';
+          setChatEnabled(Boolean(chatSessionId));
+        }
+
+        if (chatNew) {
+          chatNew.addEventListener('click', async () => {
+            if (chatResult) chatResult.textContent = 'Creating session…';
+            if (chatSavedLabel) chatSavedLabel.textContent = '(not saved)';
+            try {
+              const data = await fetchJSON('/api/prd/chat/session', { method: 'POST' });
+              setChatSession(data && data.sessionId, data && data.expiresAt);
+              renderSlotState(data && data.slotState);
+              if (chatResult) chatResult.textContent = 'Session created. Send messages to fill the slot-state, then Finalize.';
+            } catch (e) {
+              setChatSession('', '');
+              if (chatResult) chatResult.textContent = String(e && e.message ? e.message : e);
+            }
+          });
+        }
+
+        if (chatSend) {
+          chatSend.addEventListener('click', async () => {
+            if (!chatSessionId) return;
+            if (chatResult) chatResult.textContent = 'Sending message…';
+            const message = (chatMessage && chatMessage.value) ? chatMessage.value : '';
+            try {
+              const data = await fetchJSON('/api/prd/chat/message', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionId: chatSessionId, message })
+              });
+              renderSlotState(data && data.slotState);
+              if (chatResult) chatResult.textContent = 'Message applied. Missing/warnings are in slotState.';
+            } catch (e) {
+              if (chatResult) chatResult.textContent = String(e && e.message ? e.message : e);
+            }
+          });
+        }
+
+        if (chatReset) {
+          chatReset.addEventListener('click', async () => {
+            if (!chatSessionId) return;
+            if (chatResult) chatResult.textContent = 'Resetting slot-state…';
+            try {
+              const data = await fetchJSON('/api/prd/chat/message', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionId: chatSessionId, message: '/reset' })
+              });
+              renderSlotState(data && data.slotState);
+              if (chatSavedLabel) chatSavedLabel.textContent = '(not saved)';
+              if (chatResult) chatResult.textContent = 'Slot-state reset.';
+            } catch (e) {
+              if (chatResult) chatResult.textContent = String(e && e.message ? e.message : e);
+            }
+          });
+        }
+
+        if (chatRefresh) {
+          chatRefresh.addEventListener('click', async () => {
+            if (!chatSessionId) return;
+            if (chatResult) chatResult.textContent = 'Refreshing state…';
+            try {
+              const data = await fetchJSON('/api/prd/chat/state?sessionId=' + encodeURIComponent(chatSessionId));
+              renderSlotState(data && data.slotState);
+              if (chatResult) chatResult.textContent = 'State refreshed.';
+            } catch (e) {
+              if (chatResult) chatResult.textContent = String(e && e.message ? e.message : e);
+            }
+          });
+        }
+
+        if (chatFinalize) {
+          chatFinalize.addEventListener('click', async () => {
+            if (!chatSessionId) return;
+            if (chatResult) chatResult.textContent = 'Finalizing…';
+            if (chatSavedLabel) chatSavedLabel.textContent = '(not saved)';
+            try {
+              const data = await fetchJSON('/api/prd/chat/finalize', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionId: chatSessionId })
+              });
+              if (data && data.slotState) renderSlotState(data.slotState);
+              if (data && data.ok) {
+                if (chatSavedLabel) chatSavedLabel.textContent = data.path || '(unknown)';
+                if (chatResult) chatResult.textContent = data.content || '(no content)';
+                const pathInput = document.getElementById('prd-path');
+                if (pathInput && data.path) pathInput.value = data.path;
+              } else {
+                const missing = (data && data.missing) ? JSON.stringify(data.missing, null, 2) : '[]';
+                const warnings = (data && data.warnings) ? JSON.stringify(data.warnings, null, 2) : '[]';
+                if (chatResult) chatResult.textContent = 'Missing required fields:\n' + missing + '\n\nWarnings:\n' + warnings;
+              }
+            } catch (e) {
+              if (chatResult) chatResult.textContent = String(e && e.message ? e.message : e);
+            }
+          });
+        }
+
+        setChatSession('', '');
 
         // Best-effort SSE connection for live status. Runs without requiring a runId.
         try {
