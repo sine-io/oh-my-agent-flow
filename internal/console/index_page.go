@@ -585,8 +585,8 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
                 </div>
               </div>
               <div class="panel">
-                <h2>Last stream message</h2>
-                <pre id="fire-last">Waiting for stream…</pre>
+                <h2>Run log</h2>
+                <pre id="fire-last">Waiting for events…</pre>
               </div>
             </div>
           </section>
@@ -1050,11 +1050,143 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
         const fireIterations = document.getElementById('fire-iterations');
         let fireRunId = '';
         let fireES = null;
+        let fireState = null;
+        let fireRenderPending = false;
 
         function setFireOutput(text) {
           const out = document.getElementById('fire-last');
           if (!out) return;
           out.textContent = String(text || '');
+        }
+
+        function resetFireState(runId) {
+          fireState = {
+            runId: runId || '',
+            tool: '',
+            maxIterations: 0,
+            currentIteration: 0,
+            phase: '',
+            completeDetected: false,
+            iterations: {},
+            global: [],
+            finished: null,
+          };
+        }
+
+        function ensureFireState(runId) {
+          if (!fireState) resetFireState(runId || '');
+          if (runId && fireState.runId !== runId) resetFireState(runId);
+          return fireState;
+        }
+
+        function parseIntSafe(v) {
+          const n = parseInt(String(v || '0'), 10);
+          return Number.isFinite(n) ? n : 0;
+        }
+
+        function iterationBucket(iteration) {
+          const st = ensureFireState(fireRunId);
+          const n = parseIntSafe(iteration);
+          const key = String(n);
+          if (!st.iterations[key]) st.iterations[key] = { lines: [], phase: '' };
+          return st.iterations[key];
+        }
+
+        function pushBucketLine(iteration, line) {
+          const bucket = iterationBucket(iteration);
+          bucket.lines.push(String(line || ''));
+          const maxLinesPerIteration = 400;
+          if (bucket.lines.length > maxLinesPerIteration) {
+            bucket.lines = bucket.lines.slice(bucket.lines.length - maxLinesPerIteration);
+          }
+        }
+
+        function scheduleFireRender() {
+          if (fireRenderPending) return;
+          fireRenderPending = true;
+          requestAnimationFrame(() => {
+            fireRenderPending = false;
+            renderFireLog();
+          });
+        }
+
+        function renderFireLog() {
+          const st = ensureFireState(fireRunId);
+          const parts = [];
+          parts.push('Run: ' + (st.runId || '(none)'));
+          const tool = st.tool ? (' tool=' + st.tool) : '';
+          const maxI = st.maxIterations ? (' maxIterations=' + st.maxIterations) : '';
+          const phase = st.phase ? (' phase=' + st.phase) : '';
+          const complete = st.completeDetected ? ' completeDetected=true' : '';
+          parts.push('Status:' + tool + maxI + ' iteration=' + (st.currentIteration || 0) + phase + complete);
+
+          const keys = Object.keys(st.iterations || {}).map(k => parseIntSafe(k)).sort((a, b) => a - b);
+          keys.forEach((k) => {
+            const bucket = st.iterations[String(k)];
+            if (!bucket) return;
+            parts.push('');
+            parts.push('--- Iteration ' + k + (bucket.phase ? (' (' + bucket.phase + ')') : '') + ' ---');
+            (bucket.lines || []).forEach(line => parts.push(line));
+          });
+
+          if (st.finished) {
+            parts.push('');
+            parts.push('--- Finished ---');
+            parts.push(JSON.stringify(st.finished, null, 2));
+          }
+
+          setFireOutput(parts.join('\n'));
+        }
+
+        function handleFireEvent(ev) {
+          if (!ev || typeof ev !== 'object') return;
+          if (fireRunId && ev.runId && String(ev.runId) !== String(fireRunId)) return;
+
+          const st = ensureFireState(fireRunId);
+          const type = ev.type ? String(ev.type) : '';
+          const step = ev.step ? String(ev.step) : '';
+          const data = (ev.data && typeof ev.data === 'object') ? ev.data : {};
+
+          if (type === 'run_started') {
+            if (data.tool) st.tool = String(data.tool);
+            if (data.maxIterations) st.maxIterations = parseIntSafe(data.maxIterations);
+            st.phase = 'run_started';
+            scheduleFireRender();
+            return;
+          }
+
+          if (type === 'run_finished') {
+            st.phase = 'run_finished';
+            st.finished = ev;
+            scheduleFireRender();
+            return;
+          }
+
+          if (type === 'progress' && step === 'fire') {
+            if (data.tool) st.tool = String(data.tool);
+            if (data.maxIterations) st.maxIterations = parseIntSafe(data.maxIterations);
+            if (data.iteration !== undefined) st.currentIteration = parseIntSafe(data.iteration);
+            if (data.completeDetected !== undefined) st.completeDetected = !!data.completeDetected;
+            if (data.phase) st.phase = String(data.phase);
+
+            const iter = st.currentIteration || 0;
+            const note = data.note ? String(data.note) : '';
+            const phaseText = data.phase ? String(data.phase) : '';
+            const line = '[progress] phase=' + phaseText + (note ? (' note=' + note) : '');
+            pushBucketLine(iter, line);
+            iterationBucket(iter).phase = phaseText || iterationBucket(iter).phase;
+            scheduleFireRender();
+            return;
+          }
+
+          if (type === 'process_stdout' || type === 'process_stderr') {
+            const iter = (data.iteration !== undefined) ? parseIntSafe(data.iteration) : (st.currentIteration || 0);
+            const txt = data.text ? String(data.text) : '';
+            const prefix = (type === 'process_stderr') ? '[err] ' : '[out] ';
+            if (txt) pushBucketLine(iter, prefix + txt);
+            scheduleFireRender();
+            return;
+          }
         }
 
         function closeFireStream() {
@@ -1070,7 +1202,13 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
             fireES = new EventSource('/api/stream?runId=' + encodeURIComponent(runId));
             fireES.onmessage = (e) => {
               const raw = (e && e.data) ? e.data : '';
-              if (raw) setFireOutput(raw);
+              if (!raw) return;
+              try {
+                const ev = JSON.parse(raw);
+                handleFireEvent(ev);
+              } catch (_) {
+                setFireOutput(raw);
+              }
             };
             fireES.onerror = () => {
               // Keep last message; Stream badge still reports global connectivity.
@@ -1088,6 +1226,7 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
             }
             setFireOutput('Starting Fire…');
             fireRunId = '';
+            resetFireState('');
             closeFireStream();
             try {
               const data = await fetchJSON('/api/fire', {
@@ -1100,6 +1239,7 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
                 setFireOutput('Started, but no runId was returned.');
                 return;
               }
+              resetFireState(fireRunId);
               setFireOutput('Started runId=' + fireRunId + '. Connecting stream…');
               connectFireStream(fireRunId);
             } catch (e) {
@@ -1136,7 +1276,13 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
             const target = document.getElementById('fire-last');
             if (!target) return;
             const raw = (e && e.data) ? e.data : '';
-            target.textContent = raw;
+            if (!raw) return;
+            try {
+              const ev = JSON.parse(raw);
+              target.textContent = JSON.stringify(ev, null, 2);
+            } catch (_) {
+              target.textContent = raw;
+            }
           };
         } catch (_) {
           setStreamBadge('bad', 'Stream: unavailable');

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -23,6 +24,11 @@ type FireTool string
 const (
 	FireToolCodex  FireTool = "codex"
 	FireToolClaude FireTool = "claude"
+)
+
+var (
+	reRalphIterationHeader = regexp.MustCompile(`\bRalph Iteration (\d+) of (\d+)\b`)
+	reIterationComplete    = regexp.MustCompile(`\bIteration (\d+) complete\.\b`)
 )
 
 type FireConfig struct {
@@ -42,6 +48,8 @@ type fireRunState struct {
 	runID         string
 	tool          FireTool
 	maxIterations int
+	iteration     int
+	complete      bool
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -217,6 +225,12 @@ func (s *FireService) StartHandler() http.HandlerFunc {
 			},
 		})
 
+		s.publishFireProgress(runID, "info", map[string]any{
+			"phase":            "started",
+			"note":             "Fire started.",
+			"completeDetected": false,
+		})
+
 		go s.streamPipe(runID, "process_stdout", stdout)
 		go s.streamPipe(runID, "process_stderr", stderr)
 		go s.waitAndFinalize(runID, cmd)
@@ -257,15 +271,9 @@ func (s *FireService) StopHandler() http.HandlerFunc {
 		// Best effort: stop via process group (Unix) or the process itself (Windows).
 		_ = sendInterruptToProcessGroup(pgid, pid)
 
-		s.hub.Publish(StreamEvent{
-			RunID: runID,
-			Type:  "progress",
-			Step:  "fire",
-			Level: "info",
-			Data: map[string]any{
-				"phase": "stopped",
-				"note":  "Stop requested; sending SIGINT.",
-			},
+		s.publishFireProgress(runID, "info", map[string]any{
+			"phase": "stopped",
+			"note":  "Stop requested; sending SIGINT.",
 		})
 
 		deadline := time.Now().Add(5 * time.Second)
@@ -287,15 +295,9 @@ func (s *FireService) StopHandler() http.HandlerFunc {
 
 		_ = sendKillToProcessGroup(pgid, pid)
 
-		s.hub.Publish(StreamEvent{
-			RunID: runID,
-			Type:  "progress",
-			Step:  "fire",
-			Level: "warn",
-			Data: map[string]any{
-				"phase": "stopped",
-				"note":  "Process did not exit after SIGINT; sent SIGKILL.",
-			},
+		s.publishFireProgress(runID, "warn", map[string]any{
+			"phase": "stopped",
+			"note":  "Process did not exit after SIGINT; sent SIGKILL.",
 		})
 
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -397,6 +399,11 @@ func (s *FireService) waitAndFinalize(runID string, cmd *exec.Cmd) {
 		},
 	})
 
+	s.publishFireProgress(runID, level, map[string]any{
+		"phase": "finished",
+		"note":  "Fire finished: " + reason + ".",
+	})
+
 	s.clearActive(runID)
 }
 
@@ -427,13 +434,32 @@ func (s *FireService) streamPipe(runID string, eventType string, r io.Reader) {
 		if text == "" {
 			continue
 		}
+
+		pre, post := s.detectFireProgress(runID, text)
+		for _, ev := range pre {
+			s.hub.Publish(ev)
+		}
+
+		iter, maxIter, tool, complete := s.fireProgressSnapshot(runID)
 		s.hub.Publish(StreamEvent{
 			RunID: runID,
 			Type:  eventType,
 			Step:  "fire",
 			Level: "info",
-			Data:  map[string]any{"text": text},
+			Data: map[string]any{
+				"text":          text,
+				"tool":          tool,
+				"iteration":     iter,
+				"maxIterations": maxIter,
+				"isStdErr":      eventType == "process_stderr",
+				"isStdOut":      eventType == "process_stdout",
+				"complete":      complete,
+			},
 		})
+
+		for _, ev := range post {
+			s.hub.Publish(ev)
+		}
 	}
 	if err := sc.Err(); err != nil {
 		s.hub.Publish(StreamEvent{
@@ -446,6 +472,136 @@ func (s *FireService) streamPipe(runID string, eventType string, r io.Reader) {
 			},
 		})
 	}
+}
+
+func (s *FireService) fireProgressSnapshot(runID string) (iteration int, maxIterations int, tool string, completeDetected bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.active == nil || s.active.runID != runID {
+		return 0, 0, "", false
+	}
+	return s.active.iteration, s.active.maxIterations, string(s.active.tool), s.active.complete
+}
+
+func (s *FireService) publishFireProgress(runID string, level string, data map[string]any) {
+	iteration, maxIterations, tool, completeDetected := s.fireProgressSnapshot(runID)
+
+	// Ensure required fields exist for the UI’s progress-driven grouping.
+	if data == nil {
+		data = make(map[string]any, 8)
+	}
+	if _, ok := data["tool"]; !ok {
+		data["tool"] = tool
+	}
+	if _, ok := data["iteration"]; !ok {
+		data["iteration"] = iteration
+	}
+	if _, ok := data["maxIterations"]; !ok {
+		data["maxIterations"] = maxIterations
+	}
+	if _, ok := data["completeDetected"]; !ok {
+		data["completeDetected"] = completeDetected
+	}
+
+	s.hub.Publish(StreamEvent{
+		RunID: runID,
+		Type:  "progress",
+		Step:  "fire",
+		Level: level,
+		Data:  data,
+	})
+}
+
+func (s *FireService) detectFireProgress(runID string, text string) (pre []StreamEvent, post []StreamEvent) {
+	var emitIterationStart bool
+	var iteration int
+
+	if m := reRalphIterationHeader.FindStringSubmatch(text); len(m) == 3 {
+		iterParsed, _ := strconv.Atoi(m[1])
+		if iterParsed > 0 {
+			emitIterationStart = true
+			iteration = iterParsed
+		}
+	}
+
+	var emitIterationDone bool
+	var iterationDone int
+	if m := reIterationComplete.FindStringSubmatch(text); len(m) == 2 {
+		n, _ := strconv.Atoi(m[1])
+		if n > 0 {
+			emitIterationDone = true
+			iterationDone = n
+		}
+	}
+
+	emitComplete := strings.Contains(text, "<promise>COMPLETE</promise>")
+
+	s.mu.Lock()
+	active := s.active
+	if active == nil || active.runID != runID {
+		s.mu.Unlock()
+		return nil, nil
+	}
+
+	if emitIterationStart && active.iteration != iteration {
+		active.iteration = iteration
+		pre = append(pre, StreamEvent{
+			RunID: runID,
+			Type:  "progress",
+			Step:  "fire",
+			Level: "info",
+			Data: map[string]any{
+				"tool":             string(active.tool),
+				"iteration":        active.iteration,
+				"maxIterations":    active.maxIterations,
+				"phase":            "iteration_started",
+				"completeDetected": active.complete,
+				"note":             "Iteration started.",
+			},
+		})
+	}
+
+	if emitIterationDone {
+		// Keep the stored iteration in sync if the script announces completion.
+		if active.iteration < iterationDone {
+			active.iteration = iterationDone
+		}
+		post = append(post, StreamEvent{
+			RunID: runID,
+			Type:  "progress",
+			Step:  "fire",
+			Level: "info",
+			Data: map[string]any{
+				"tool":             string(active.tool),
+				"iteration":        active.iteration,
+				"maxIterations":    active.maxIterations,
+				"phase":            "iteration_finished",
+				"completeDetected": active.complete,
+				"note":             "Iteration finished.",
+			},
+		})
+	}
+
+	if emitComplete && !active.complete {
+		active.complete = true
+		post = append(post, StreamEvent{
+			RunID: runID,
+			Type:  "progress",
+			Step:  "fire",
+			Level: "info",
+			Data: map[string]any{
+				"tool":             string(active.tool),
+				"iteration":        active.iteration,
+				"maxIterations":    active.maxIterations,
+				"phase":            "complete_detected",
+				"completeDetected": true,
+				"note":             "Detected <promise>COMPLETE</promise> in process output.",
+			},
+		})
+	}
+	s.mu.Unlock()
+
+	return pre, post
 }
 
 func parseFireTool(raw string) (FireTool, *APIError, int) {

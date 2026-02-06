@@ -302,3 +302,114 @@ func TestFireService_StopHandler_StopsProcessTree(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+func TestFireService_EmitsProgressEventsAndDetectsComplete(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "prd.json"), []byte(`{}`+"\n"), 0644); err != nil {
+		t.Fatalf("write prd.json: %v", err)
+	}
+
+	// Minimal script that mimics ralph-codex.sh output patterns.
+	script := "#!/usr/bin/env bash\n" +
+		"echo \"Starting Ralph - Tool: codex - Max iterations: 2\"\n" +
+		"echo \"===============================================================\"\n" +
+		"echo \"  Ralph Iteration 1 of 2 (codex)\"\n" +
+		"echo \"===============================================================\"\n" +
+		"echo \"some stdout line\"\n" +
+		"echo \"assistant output: <promise>COMPLETE</promise>\" 1>&2\n" +
+		"echo \"Iteration 1 complete. Continuing...\"\n" +
+		"exit 0\n"
+	if err := os.WriteFile(filepath.Join(root, "ralph-codex.sh"), []byte(script), 0755); err != nil {
+		t.Fatalf("write ralph-codex.sh: %v", err)
+	}
+
+	hub := NewStreamHub(StreamHubConfig{MaxEventsPerRun: 200, SubscriberBufSize: 64})
+	svc, err := NewFireService(FireConfig{ProjectRoot: root, Hub: hub})
+	if err != nil {
+		t.Fatalf("NewFireService: %v", err)
+	}
+
+	body, _ := json.Marshal(FireStartRequest{Tool: "codex", MaxIterations: 2})
+	req := httptest.NewRequest(http.MethodPost, "/api/fire", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	svc.StartHandler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp FireStartResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	// Wait for the run to finish so we can inspect the buffered events.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		hub.mu.Lock()
+		state := hub.runs[resp.RunID]
+		haveFinished := false
+		if state != nil {
+			for _, ev := range state.events {
+				if ev.Type == "run_finished" {
+					haveFinished = true
+				}
+			}
+		}
+		hub.mu.Unlock()
+		if haveFinished {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for run_finished for runId=%s", resp.RunID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	var sawIterStart bool
+	var sawComplete bool
+	var completeCount int
+
+	hub.mu.Lock()
+	state := hub.runs[resp.RunID]
+	events := append([]StreamEvent(nil), state.events...)
+	hub.mu.Unlock()
+
+	for _, ev := range events {
+		if ev.Type != "progress" || ev.Step != "fire" {
+			continue
+		}
+		data, ok := ev.Data.(map[string]any)
+		if !ok {
+			t.Fatalf("expected progress data map, got %T", ev.Data)
+		}
+		if _, ok := data["tool"]; !ok {
+			t.Fatalf("progress event missing tool: %+v", data)
+		}
+		if _, ok := data["iteration"]; !ok {
+			t.Fatalf("progress event missing iteration: %+v", data)
+		}
+		if _, ok := data["maxIterations"]; !ok {
+			t.Fatalf("progress event missing maxIterations: %+v", data)
+		}
+		phase, _ := data["phase"].(string)
+		if phase == "iteration_started" {
+			sawIterStart = true
+		}
+		if phase == "complete_detected" {
+			completeCount++
+			sawComplete = true
+			if got, ok := data["completeDetected"].(bool); !ok || !got {
+				t.Fatalf("expected completeDetected=true for complete_detected: %+v", data)
+			}
+		}
+	}
+
+	if !sawIterStart {
+		t.Fatalf("expected to see iteration_started progress event; got %d total events", len(events))
+	}
+	if !sawComplete {
+		t.Fatalf("expected to see complete_detected progress event; got %d total events", len(events))
+	}
+	if completeCount != 1 {
+		t.Fatalf("expected exactly 1 complete_detected event, got %d", completeCount)
+	}
+}

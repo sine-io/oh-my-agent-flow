@@ -69,4 +69,5 @@ npm run dev
 - Before opening a new `.ohmyagentflow/runs/*.jsonl.tmp`, `StreamHub` performs best-effort cleanup in the archive dir (retention by count + total size; deletes oldest-by-mtime).
 - For Fire (`POST /api/fire`), enforce strict inputs (`tool ∈ {codex, claude}`, `maxIterations ∈ 1..200`), require `prd.json` and `ralph-codex.sh` to be regular non-symlink files under project root, execute only `bash <abs>/ralph-codex.sh --tool <tool> <maxIterations>`, and reject concurrent runs with `RESOURCE_CONFLICT`.
 - For Fire Stop (`POST /api/fire/stop`), prefer process-group signaling: start Fire with a new PGID and stop via `SIGINT` → wait for the process group to be empty (`kill(-pgid, 0)`), then `SIGKILL` if still alive.
+- For Fire iteration UX, emit `progress` events with `{tool,iteration,maxIterations,phase,completeDetected,note}` and drive the UI grouping from those events (avoid parsing stdout strings in the browser).
 - Always update AGENTS.md with discovered patterns for future iterations

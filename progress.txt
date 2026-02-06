@@ -18,6 +18,7 @@
 - Use `POST /api/init` (Go filesystem ops, no shell) to install repo-local Codex skills by copying `skills/<skill>/SKILL-codex.md` into `.codex/skills/<skill>/SKILL.md`.
 - For Fire runs, use `POST /api/fire` + `console.NewFireService(...)` to execute only `bash <abs>/ralph-codex.sh --tool <codex|claude> <maxIterations>`, stream stdout/stderr via `StreamHub`, and reject concurrent runs with `RESOURCE_CONFLICT`.
 - For Fire Stop, don’t assume “parent exited” means the run is stopped; wait for the process group to be empty (e.g. `kill(-pgid, 0)` returns ESRCH) before returning success.
+- For Fire progress UX, emit `progress` events with `{tool,iteration,maxIterations,phase,completeDetected,note}` and drive UI grouping from those events (not from parsing raw stdout).
 
 Started: Thu Feb  5 19:53:13 CST 2026
 ---
@@ -178,4 +179,14 @@ Started: Thu Feb  5 19:53:13 CST 2026
 - **Learnings for future iterations:**
   - Don’t treat “main process exited” as “Fire stopped”: wait for the process group to be empty, otherwise background children can outlive the parent.
   - Prefer OS-specific helpers with build tags for process-group and signal handling to keep Windows builds compiling cleanly.
+---
+
+## 2026-02-06 19:46:18 CST - US-017
+- Added Fire output parsing to emit structured `progress` events for iteration start/finish and `<promise>COMPLETE</promise>` detection (`phase=complete_detected`).
+- Updated the Fire UI to parse SSE JSON and group output by iteration using `progress` events (instead of showing the last raw message).
+- Added a focused test that verifies required progress fields (`tool`, `iteration`, `maxIterations`, `phase`, `completeDetected`) and that COMPLETE is detected exactly once.
+- Files changed: `internal/console/fire.go`, `internal/console/fire_test.go`, `internal/console/index_page.go`, `prd.json`, `progress.txt`
+- **Learnings for future iterations:**
+  - Keep `maxIterations` in progress events sourced from the Fire request/config (don’t trust process output to define it).
+  - For safe browser verification, run the console from a temp project root with a dummy `ralph-codex.sh` so Fire streaming can be exercised without invoking real agent loops.
 ---
