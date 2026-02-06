@@ -7,6 +7,7 @@
 - Protect all `POST /api/*` routes using `console.RequireWriteAuth(...)` (Origin allowlist + `X-Session-Token`), and inject the token into the UI via `<meta name="ohmyagentflow-session-token" ...>`.
 - Keep the UI HTML in `internal/console` via `console.RenderIndexHTML(...)` (uses `html/template`) so `cmd/ohmyagentflow/main.go` stays focused on wiring.
 - `internal/console/index_page.go` is a Go raw string template: don’t include backticks in the HTML/JS text or the Go file won’t compile.
+- When calling LLM CLIs (`codex`/`claude`) from Go, require stable output markers (e.g., `BEGIN_COMMANDS`/`END_COMMANDS`) and extract the last marker pair to avoid parsing echoed prompts; sanitize/redact provider output before returning it in API errors.
 - For filesystem reads, use `console.NewFSReader(...)` + `FSReadHandler(...)` so paths are forced under project root, symlink escapes are blocked, reads are whitelisted, and file size is capped.
 - For questionnaire PRD generation, use `POST /api/prd/generate?preview=1` for live previews (no write) and `POST /api/prd/generate` to atomically write `tasks/prd-<feature_slug>.md`.
 - For SSE logs, use `console.NewStreamHub(...)` + `console.StreamHandler(...)`; publish events via `hub.Publish(StreamEvent{...})` and clients can reconnect with `sinceSeq` for replay.
@@ -131,4 +132,13 @@ Started: Thu Feb  5 19:53:13 CST 2026
 - **Learnings for future iterations:**
   - The console UI is embedded as a Go raw string; avoid backticks in the HTML/JS text (use plain text or entities) to prevent Go parse errors.
   - Chat sessions are intentionally lightweight: message parsing supports `key: value` lines plus `/reset`, `/story`, and `/ac` commands to evolve slot-state deterministically.
+---
+
+## 2026-02-06 18:55:30 CST - US-013
+- Integrated LLM-backed chat message handling: UI can select `codex` or `claude` (or manual), and the server shells out to the selected CLI to translate user messages into slot-state update commands.
+- Ensured the server only applies structured commands to slot-state (never writes raw model output directly to PRD) and redacts common secret patterns from provider error output.
+- Files changed: `internal/console/prd_chat.go`, `internal/console/prd_chat_llm.go`, `internal/console/prd_chat_test.go`, `internal/console/index_page.go`, `AGENTS.md`, `prd.json`, `progress.txt`
+- **Learnings for future iterations:**
+  - Wrap model responses in stable markers and extract the last marker pair to avoid accidentally parsing echoed prompts from CLI tools.
+  - Avoid leaking secrets by redacting common key patterns (`sk-*`, `api_key`, `authorization`) in any provider output returned via JSON errors.
 ---

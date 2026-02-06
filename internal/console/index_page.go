@@ -508,6 +508,14 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
                     <div class="v" id="prd-chat-expires">(n/a)</div>
                   </div>
                   <div class="field">
+                    <label for="prd-chat-tool">Tool</label>
+                    <select id="prd-chat-tool">
+                      <option value="codex">codex</option>
+                      <option value="claude">claude</option>
+                      <option value="">manual (no LLM)</option>
+                    </select>
+                  </div>
+                  <div class="field">
                     <label for="prd-chat-message">Message</label>
                     <textarea id="prd-chat-message" placeholder="feature_slug: task-status\ntitle: Task Status Feature\ndescription: Add ability to mark tasks with different statuses.\n/story As a user, I can set a status\nstory_desc: Users can set status to todo/in-progress/done.\n/ac Typecheck passes"></textarea>
                   </div>
@@ -885,6 +893,7 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
         const chatRefresh = document.getElementById('prd-chat-refresh');
         const chatFinalize = document.getElementById('prd-chat-finalize');
         const chatMessage = document.getElementById('prd-chat-message');
+        const chatTool = document.getElementById('prd-chat-tool');
         const chatSlot = document.getElementById('prd-chat-slot');
         const chatResult = document.getElementById('prd-chat-result');
         const chatSessionLabel = document.getElementById('prd-chat-session');
@@ -933,11 +942,12 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
             if (!chatSessionId) return;
             if (chatResult) chatResult.textContent = 'Sending message…';
             const message = (chatMessage && chatMessage.value) ? chatMessage.value : '';
+            const tool = (chatTool && chatTool.value !== undefined) ? String(chatTool.value) : '';
             try {
               const data = await fetchJSON('/api/prd/chat/message', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ sessionId: chatSessionId, message })
+                body: JSON.stringify({ sessionId: chatSessionId, message, tool })
               });
               renderSlotState(data && data.slotState);
               if (chatResult) chatResult.textContent = 'Message applied. Missing/warnings are in slotState.';

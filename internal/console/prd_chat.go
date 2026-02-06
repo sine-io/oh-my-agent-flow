@@ -1,6 +1,7 @@
 package console
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -15,12 +16,18 @@ type PRDChatConfig struct {
 	ProjectRoot string
 	SessionTTL  time.Duration
 	Now         func() time.Time
+
+	// Optional. If nil, chat messages are applied directly (no model call).
+	ModelToolFunc PRDChatModelToolFunc
+	ModelTimeout  time.Duration
 }
 
 type PRDChatService struct {
 	projectRoot string
 	ttl         time.Duration
 	now         func() time.Time
+	modelFunc   PRDChatModelToolFunc
+	modelTO     time.Duration
 
 	mu       sync.Mutex
 	sessions map[string]*prdChatSession
@@ -64,6 +71,7 @@ type PRDChatSessionResponse struct {
 type PRDChatMessageRequest struct {
 	SessionID string `json:"sessionId"`
 	Message   string `json:"message"`
+	Tool      string `json:"tool,omitempty"`
 }
 
 type PRDChatMessageResponse struct {
@@ -103,10 +111,20 @@ func NewPRDChatService(cfg PRDChatConfig) (*PRDChatService, error) {
 	if now == nil {
 		now = time.Now
 	}
+	modelTO := cfg.ModelTimeout
+	if modelTO <= 0 {
+		modelTO = 25 * time.Second
+	}
+	modelFn := cfg.ModelToolFunc
+	if modelFn == nil {
+		modelFn = DefaultPRDChatModelToolFunc
+	}
 	return &PRDChatService{
 		projectRoot: projectRoot,
 		ttl:         ttl,
 		now:         now,
+		modelFunc:   modelFn,
+		modelTO:     modelTO,
 		sessions:    make(map[string]*prdChatSession),
 	}, nil
 }
@@ -185,8 +203,19 @@ func (s *PRDChatService) MessageHandler() http.HandlerFunc {
 			})
 			return
 		}
+		req.Tool = strings.TrimSpace(strings.ToLower(req.Tool))
+		if req.Tool != "" && req.Tool != string(PRDChatToolCodex) && req.Tool != string(PRDChatToolClaude) {
+			WriteAPIError(w, http.StatusBadRequest, APIError{
+				Code:    "VALIDATION_ERROR",
+				Message: "tool must be one of: codex, claude",
+				Hint:    "Omit tool to use manual slot-state commands, or pass tool='codex'|'claude' to use an LLM provider.",
+			})
+			return
+		}
 
 		now := s.now()
+		var stateSnap PRDChatSlotState
+		var activeStorySnap int
 		s.mu.Lock()
 		s.cleanupLocked(now)
 		session := s.sessions[req.SessionID]
@@ -200,7 +229,45 @@ func (s *PRDChatService) MessageHandler() http.HandlerFunc {
 			return
 		}
 		session.expiresAt = now.Add(s.ttl)
-		applyChatMessage(session, req.Message)
+		stateSnap = session.state
+		activeStorySnap = session.activeStory
+		s.mu.Unlock()
+
+		messageToApply := req.Message
+		if req.Tool != "" {
+			if s.modelFunc == nil {
+				WriteAPIError(w, http.StatusBadRequest, APIError{
+					Code:    "LLM_PROVIDER_DISABLED",
+					Message: "LLM chat provider is not configured on this server",
+					Hint:    "Send manual slot-state commands (key: value, /story, /ac), or restart the server with an LLM provider available.",
+				})
+				return
+			}
+			ctx, cancel := context.WithTimeout(r.Context(), s.modelTO)
+			defer cancel()
+			commands, apiErr, status := prdChatTranslateToCommands(ctx, s.modelFunc, PRDChatTool(req.Tool), stateSnap, activeStorySnap, req.Message)
+			if apiErr != nil {
+				WriteAPIError(w, status, *apiErr)
+				return
+			}
+			messageToApply = commands
+		}
+
+		now2 := s.now()
+		s.mu.Lock()
+		s.cleanupLocked(now2)
+		session = s.sessions[req.SessionID]
+		if session == nil {
+			s.mu.Unlock()
+			WriteAPIError(w, http.StatusNotFound, APIError{
+				Code:    "SESSION_NOT_FOUND",
+				Message: "chat session not found (or expired)",
+				Hint:    "Create a new session via POST /api/prd/chat/session.",
+			})
+			return
+		}
+		session.expiresAt = now2.Add(s.ttl)
+		applyChatMessage(session, messageToApply)
 		session.state.Missing, session.state.Warnings = computeChatGaps(session.state)
 		state := session.state
 		s.mu.Unlock()

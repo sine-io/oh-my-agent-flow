@@ -62,6 +62,7 @@ npm run dev
 - For local-console write endpoints, guard `POST /api/*` with strict Origin allowlisting plus a per-run `X-Session-Token` (see `internal/console/RequireWriteAuth` and the `<meta name="ohmyagentflow-session-token">` convention).
 - For local-console filesystem access, route all user-supplied paths through `internal/console/FSReader` to enforce project-root containment, symlink-escape prevention, whitelisting, and max read size.
 - For PRD questionnaire mode, use `POST /api/prd/generate?preview=1` to render a Convert-compatible preview without writing; omit `preview` to save under `tasks/prd-<feature_slug>.md`.
+- When shelling out to LLM CLIs (`codex`/`claude`) from the console, require outputs to be wrapped in stable markers (e.g., `BEGIN_COMMANDS`/`END_COMMANDS`) and extract the last marker pair to avoid accidentally parsing echoed prompts; sanitize/redact provider output before returning it in API errors.
 - For SSE logs, use `internal/console/StreamHub` + `StreamHandler` for run-scoped `seq` ordering, retention, and `sinceSeq` replay (and governance: truncate noisy `process_stdout/stderr` messages and emit a warning once per run).
 - `StreamHub` also archives run streams to `.ohmyagentflow/runs/<runId>.jsonl` (writes `.tmp` during the run, renames on `run_finished`, size cap via `StreamHubConfig.MaxArchiveBytes`).
 - Before opening a new `.ohmyagentflow/runs/*.jsonl.tmp`, `StreamHub` performs best-effort cleanup in the archive dir (retention by count + total size; deletes oldest-by-mtime).
