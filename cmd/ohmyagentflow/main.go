@@ -55,6 +55,14 @@ func main() {
 		ArchiveDir: filepath.Join(projectRoot, ".ohmyagentflow", "runs"),
 	})
 
+	fireSvc, err := console.NewFireService(console.FireConfig{
+		ProjectRoot: projectRoot,
+		Hub:         streamHub,
+	})
+	if err != nil {
+		log.Fatalf("startup error: %v", err)
+	}
+
 	prdChat, err := console.NewPRDChatService(console.PRDChatConfig{
 		ProjectRoot: projectRoot,
 		SessionTTL:  30 * time.Minute,
@@ -97,6 +105,7 @@ func main() {
 	mux.HandleFunc("GET /api/prd/chat/state", prdChat.StateHandler())
 	mux.HandleFunc("POST /api/prd/chat/finalize", prdChat.FinalizeHandler())
 	mux.HandleFunc("POST /api/convert", console.ConvertHandler(console.ConvertConfig{ProjectRoot: projectRoot, FSReader: fsReader}))
+	mux.HandleFunc("POST /api/fire", fireSvc.StartHandler())
 
 	mux.HandleFunc("POST /api/ping", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")

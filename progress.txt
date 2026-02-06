@@ -16,6 +16,7 @@
 - Before starting a new run archive, `StreamHub` performs a best-effort cleanup in `.ohmyagentflow/runs/` to cap total archives by count and total directory size (deletes oldest-by-mtime first; failures are non-blocking and emitted as an `error` event).
 - `StreamHub` enforces governance for noisy process output: truncates `process_stdout/stderr` `data.text` (default 8KB) and emits a one-time `progress` warning per run (config via `StreamHubConfig.MaxProcessTextBytes`).
 - Use `POST /api/init` (Go filesystem ops, no shell) to install repo-local Codex skills by copying `skills/<skill>/SKILL-codex.md` into `.codex/skills/<skill>/SKILL.md`.
+- For Fire runs, use `POST /api/fire` + `console.NewFireService(...)` to execute only `bash <abs>/ralph-codex.sh --tool <codex|claude> <maxIterations>`, stream stdout/stderr via `StreamHub`, and reject concurrent runs with `RESOURCE_CONFLICT`.
 
 Started: Thu Feb  5 19:53:13 CST 2026
 ---
@@ -154,4 +155,15 @@ Started: Thu Feb  5 19:53:13 CST 2026
 - **Learnings for future iterations:**
   - Reuse `FSReader.ReadWhitelistedText(...)` for any endpoint that accepts a user-supplied path; it centralizes root containment + symlink escape protection + whitelist enforcement.
   - Prefer returning parse errors in the shared `APIError` shape (with `file` + `location`) so the UI can show actionable messages without special-casing each endpoint.
+---
+
+## 2026-02-06 19:16:00 CST - US-015
+- Implemented `POST /api/fire` to run `bash <abs>/ralph-codex.sh --tool <codex|claude> <maxIterations>` with strict validation (`tool` allowlist, `maxIterations` range, require non-symlink `prd.json` and `ralph-codex.sh` under project root) and single-run concurrency (`RESOURCE_CONFLICT`).
+- Enabled the Fire UI to start runs and connect to a run-scoped SSE stream (`/api/stream?runId=...`).
+- Added tests for validation, startup, and concurrency gating.
+- Files changed: `cmd/ohmyagentflow/main.go`, `internal/console/fire.go`, `internal/console/fire_test.go`, `internal/console/index_page.go`, `AGENTS.md`, `prd.json`, `progress.txt`
+- **Learnings for future iterations:**
+  - For safe local execution, validate any “allowed script” is a regular file and reject symlinks before calling `bash` (prevents path redirection outside project root).
+  - When the UI opens a run-scoped EventSource, suppress global `/api/stream` updates to the same element to avoid racing renders.
+  - Browser verification can be done safely by running the console from a temp project root with a dummy `ralph-codex.sh` to exercise streaming without invoking real agent loops.
 ---

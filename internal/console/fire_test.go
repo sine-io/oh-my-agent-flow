@@ -1,0 +1,174 @@
+package console
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestFireService_StartHandler_ValidatesAndStarts(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "prd.json"), []byte(`{"ok":true}`+"\n"), 0644); err != nil {
+		t.Fatalf("write prd.json: %v", err)
+	}
+	script := "#!/usr/bin/env bash\n" +
+		"echo \"hello stdout\"\n" +
+		"echo \"hello stderr\" 1>&2\n" +
+		"exit 0\n"
+	if err := os.WriteFile(filepath.Join(root, "ralph-codex.sh"), []byte(script), 0755); err != nil {
+		t.Fatalf("write ralph-codex.sh: %v", err)
+	}
+
+	hub := NewStreamHub(StreamHubConfig{MaxEventsPerRun: 100, SubscriberBufSize: 16})
+	svc, err := NewFireService(FireConfig{ProjectRoot: root, Hub: hub})
+	if err != nil {
+		t.Fatalf("NewFireService: %v", err)
+	}
+
+	body, _ := json.Marshal(FireStartRequest{Tool: "codex", MaxIterations: 1})
+	req := httptest.NewRequest(http.MethodPost, "/api/fire", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	svc.StartHandler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp FireStartResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if !resp.OK || !strings.HasPrefix(resp.RunID, "fire-") {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		hub.mu.Lock()
+		state := hub.runs[resp.RunID]
+		var haveStarted, haveFinished bool
+		if state != nil {
+			for _, ev := range state.events {
+				if ev.Type == "run_started" {
+					haveStarted = true
+				}
+				if ev.Type == "run_finished" {
+					haveFinished = true
+				}
+			}
+		}
+		hub.mu.Unlock()
+
+		if haveStarted && haveFinished {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for stream events for runId=%s", resp.RunID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestFireService_StartHandler_RejectsMissingPRDJSON(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "ralph-codex.sh"), []byte("#!/usr/bin/env bash\nexit 0\n"), 0755); err != nil {
+		t.Fatalf("write ralph-codex.sh: %v", err)
+	}
+
+	hub := NewStreamHub(StreamHubConfig{MaxEventsPerRun: 10, SubscriberBufSize: 4})
+	svc, err := NewFireService(FireConfig{ProjectRoot: root, Hub: hub})
+	if err != nil {
+		t.Fatalf("NewFireService: %v", err)
+	}
+
+	body, _ := json.Marshal(FireStartRequest{Tool: "codex", MaxIterations: 1})
+	req := httptest.NewRequest(http.MethodPost, "/api/fire", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	svc.StartHandler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	var apiErr APIError
+	_ = json.Unmarshal(w.Body.Bytes(), &apiErr)
+	if apiErr.Code != "VALIDATION_ERROR" {
+		t.Fatalf("expected VALIDATION_ERROR, got %+v", apiErr)
+	}
+	if !strings.Contains(strings.ToLower(apiErr.Hint), "convert") {
+		t.Fatalf("expected hint to mention Convert, got %+v", apiErr)
+	}
+}
+
+func TestFireService_StartHandler_RejectsBadTool(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "prd.json"), []byte(`{}`+"\n"), 0644); err != nil {
+		t.Fatalf("write prd.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "ralph-codex.sh"), []byte("#!/usr/bin/env bash\nexit 0\n"), 0755); err != nil {
+		t.Fatalf("write ralph-codex.sh: %v", err)
+	}
+
+	hub := NewStreamHub(StreamHubConfig{MaxEventsPerRun: 10, SubscriberBufSize: 4})
+	svc, err := NewFireService(FireConfig{ProjectRoot: root, Hub: hub})
+	if err != nil {
+		t.Fatalf("NewFireService: %v", err)
+	}
+
+	body, _ := json.Marshal(FireStartRequest{Tool: "amp", MaxIterations: 1})
+	req := httptest.NewRequest(http.MethodPost, "/api/fire", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	svc.StartHandler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	var apiErr APIError
+	_ = json.Unmarshal(w.Body.Bytes(), &apiErr)
+	if apiErr.Code != "VALIDATION_ERROR" {
+		t.Fatalf("expected VALIDATION_ERROR, got %+v", apiErr)
+	}
+}
+
+func TestFireService_StartHandler_RejectsConcurrentRun(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "prd.json"), []byte(`{}`+"\n"), 0644); err != nil {
+		t.Fatalf("write prd.json: %v", err)
+	}
+	script := "#!/usr/bin/env bash\n" +
+		"sleep 0.2\n" +
+		"exit 0\n"
+	if err := os.WriteFile(filepath.Join(root, "ralph-codex.sh"), []byte(script), 0755); err != nil {
+		t.Fatalf("write ralph-codex.sh: %v", err)
+	}
+
+	hub := NewStreamHub(StreamHubConfig{MaxEventsPerRun: 50, SubscriberBufSize: 8})
+	svc, err := NewFireService(FireConfig{ProjectRoot: root, Hub: hub})
+	if err != nil {
+		t.Fatalf("NewFireService: %v", err)
+	}
+
+	body, _ := json.Marshal(FireStartRequest{Tool: "codex", MaxIterations: 1})
+	req1 := httptest.NewRequest(http.MethodPost, "/api/fire", bytes.NewReader(body))
+	w1 := httptest.NewRecorder()
+	svc.StartHandler().ServeHTTP(w1, req1)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("expected first start 200, got %d: %s", w1.Code, w1.Body.String())
+	}
+
+	req2 := httptest.NewRequest(http.MethodPost, "/api/fire", bytes.NewReader(body))
+	w2 := httptest.NewRecorder()
+	svc.StartHandler().ServeHTTP(w2, req2)
+	if w2.Code != http.StatusConflict {
+		t.Fatalf("expected second start 409, got %d: %s", w2.Code, w2.Body.String())
+	}
+	var apiErr APIError
+	_ = json.Unmarshal(w2.Body.Bytes(), &apiErr)
+	if apiErr.Code != "RESOURCE_CONFLICT" {
+		t.Fatalf("expected RESOURCE_CONFLICT, got %+v", apiErr)
+	}
+}

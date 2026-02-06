@@ -67,4 +67,5 @@ npm run dev
 - For SSE logs, use `internal/console/StreamHub` + `StreamHandler` for run-scoped `seq` ordering, retention, and `sinceSeq` replay (and governance: truncate noisy `process_stdout/stderr` messages and emit a warning once per run).
 - `StreamHub` also archives run streams to `.ohmyagentflow/runs/<runId>.jsonl` (writes `.tmp` during the run, renames on `run_finished`, size cap via `StreamHubConfig.MaxArchiveBytes`).
 - Before opening a new `.ohmyagentflow/runs/*.jsonl.tmp`, `StreamHub` performs best-effort cleanup in the archive dir (retention by count + total size; deletes oldest-by-mtime).
+- For Fire (`POST /api/fire`), enforce strict inputs (`tool ∈ {codex, claude}`, `maxIterations ∈ 1..200`), require `prd.json` and `ralph-codex.sh` to be regular non-symlink files under project root, execute only `bash <abs>/ralph-codex.sh --tool <tool> <maxIterations>`, and reject concurrent runs with `RESOURCE_CONFLICT`.
 - Always update AGENTS.md with discovered patterns for future iterations

@@ -571,16 +571,15 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
                 <div class="field">
                   <label for="fire-tool">Tool</label>
                   <select id="fire-tool">
-                    <option value="amp">amp</option>
-                    <option value="claude">claude</option>
                     <option value="codex">codex</option>
+                    <option value="claude">claude</option>
                   </select>
                 </div>
                 <div class="field">
                   <label for="fire-iterations">Max iterations</label>
-                  <input id="fire-iterations" type="number" min="1" max="50" value="10" />
+                  <input id="fire-iterations" type="number" min="1" max="200" value="10" />
                 </div>
-                <button class="btn primary" type="button" disabled>Start Fire (coming soon)</button>
+                <button class="btn primary" id="fire-start" type="button">Start Fire</button>
               </div>
               <div class="panel">
                 <h2>Last stream message</h2>
@@ -1041,6 +1040,70 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
 
         setChatSession('', '');
 
+        // Fire (run Ralph via bash and stream logs)
+        const fireStart = document.getElementById('fire-start');
+        const fireTool = document.getElementById('fire-tool');
+        const fireIterations = document.getElementById('fire-iterations');
+        let fireRunId = '';
+        let fireES = null;
+
+        function setFireOutput(text) {
+          const out = document.getElementById('fire-last');
+          if (!out) return;
+          out.textContent = String(text || '');
+        }
+
+        function closeFireStream() {
+          if (!fireES) return;
+          try { fireES.close(); } catch (_) {}
+          fireES = null;
+        }
+
+        function connectFireStream(runId) {
+          closeFireStream();
+          if (!runId) return;
+          try {
+            fireES = new EventSource('/api/stream?runId=' + encodeURIComponent(runId));
+            fireES.onmessage = (e) => {
+              const raw = (e && e.data) ? e.data : '';
+              if (raw) setFireOutput(raw);
+            };
+            fireES.onerror = () => {
+              // Keep last message; Stream badge still reports global connectivity.
+            };
+          } catch (_) {}
+        }
+
+        if (fireStart) {
+          fireStart.addEventListener('click', async () => {
+            const tool = (fireTool && fireTool.value !== undefined) ? String(fireTool.value) : '';
+            const n = parseInt((fireIterations && fireIterations.value) ? String(fireIterations.value) : '0', 10);
+            if (!n || n < 1) {
+              setFireOutput('Pick maxIterations >= 1.');
+              return;
+            }
+            setFireOutput('Starting Fire…');
+            fireRunId = '';
+            closeFireStream();
+            try {
+              const data = await fetchJSON('/api/fire', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tool, maxIterations: n })
+              });
+              fireRunId = (data && data.runId) ? String(data.runId) : '';
+              if (!fireRunId) {
+                setFireOutput('Started, but no runId was returned.');
+                return;
+              }
+              setFireOutput('Started runId=' + fireRunId + '. Connecting stream…');
+              connectFireStream(fireRunId);
+            } catch (e) {
+              setFireOutput(String(e && e.message ? e.message : e));
+            }
+          });
+        }
+
         // Best-effort SSE connection for live status. Runs without requiring a runId.
         try {
           const es = new EventSource('/api/stream');
@@ -1048,6 +1111,7 @@ var indexPageTmpl = template.Must(template.New("index").Parse(`<!doctype html>
           es.onopen = () => setStreamBadge('good', 'Stream: connected');
           es.onerror = () => setStreamBadge('bad', 'Stream: disconnected');
           es.onmessage = (e) => {
+            if (fireRunId) return;
             const target = document.getElementById('fire-last');
             if (!target) return;
             const raw = (e && e.data) ? e.data : '';
